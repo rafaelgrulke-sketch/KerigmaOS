@@ -48,6 +48,32 @@ jobs:
           sudo cp apps/kerigma-welcome/kerigma-welcome.desktop "$ROOTFS/usr/share/applications/"
           sudo cp apps/kerigma-welcome/kerigma-welcome.desktop "$ROOTFS/etc/skel/.config/autostart/"
 
+          # Lançador automático da Wikipédia Offline (Kiwix Server + Navegador)
+          cat << 'WIKISCRIPT' | sudo tee "$ROOTFS/usr/local/bin/kerigma-wiki" > /dev/null
+          #!/usr/bin/env bash
+          ZIM_FILE=$(ls "$HOME/Documentos/Wikipedia/"*.zim 2>/dev/null | head -n 1)
+          if [ -z "$ZIM_FILE" ]; then
+              /usr/local/bin/kerigma-welcome
+              exit 0
+          fi
+          pkill -f "kiwix-serve" || true
+          kiwix-serve --port=8080 "$ZIM_FILE" &
+          sleep 1
+          xdg-open "http://localhost:8080"
+          WIKISCRIPT
+          sudo chmod +x "$ROOTFS/usr/local/bin/kerigma-wiki"
+
+          cat << 'WIKIDESKTOP' | sudo tee "$ROOTFS/usr/share/applications/kerigma-wiki.desktop" > /dev/null
+          [Desktop Entry]
+          Type=Application
+          Name=Wikipédia Offline (Kerigma)
+          Comment=Abrir enciclopédia offline via Kiwix
+          Exec=/usr/local/bin/kerigma-wiki
+          Icon=internet-web-browser
+          Terminal=false
+          Categories=Education;Reference;
+          WIKIDESKTOP
+
           # Pré-configurando atalhos Win+R (KRunner) e Win+Shift+S (Spectacle)
           cat << 'SHORTCUTS' | sudo tee "$ROOTFS/etc/skel/.config/kglobalshortcutsrc" > /dev/null
           [org.kde.krunner.desktop]
@@ -81,16 +107,14 @@ jobs:
           SOURCES
 
           apt-get update
-          apt-get install -y --no-install-recommends ca-certificates curl gnupg wget
+          apt-get install -y --no-install-recommends \
+              ca-certificates curl gnupg wget apt-transport-https
 
           # Repositório oficial VSCodium
-          wget -qO - https://gitlab.com/paulcarroty/vscodium-deb-rpm-repo/raw/master/pub.gpg \
-              | gpg --dearmor -o /usr/share/keyrings/vscodium-archive-keyring.gpg
-          echo 'deb [ signed-by=/usr/share/keyrings/vscodium-archive-keyring.gpg ] https://download.vscodium.com/debs vscodium main' \
+          curl -fsSL https://gitlab.com/paulcarroty/vscodium-deb-rpm-repo/raw/master/pub.gpg \
+              | gpg --batch --yes --dearmor -o /usr/share/keyrings/vscodium-archive-keyring.gpg
+          echo 'deb [ signed-by=/usr/share/keyrings/vscodium-archive-keyring.gpg ] https://paulcarroty.gitlab.io/vscodium-deb-rpm-repo/debs vscodium main' \
               > /etc/apt/sources.list.d/vscodium.list
-
-          # Repositório oficial Node.js 22 LTS
-          curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 
           apt-get update
           apt-get install -y --no-install-recommends \
@@ -100,7 +124,7 @@ jobs:
               network-manager plasma-nm plasma-pa bluez bluedevil usbutils pciutils \
               firmware-linux firmware-realtek firmware-iwlwifi firmware-atheros firmware-brcm80211 \
               plasma-desktop dolphin konsole spectacle plank calamares calamares-settings-debian \
-              git zsh docker.io build-essential nodejs codium kiwix python3-pyqt5
+              git zsh docker.io build-essential nodejs npm codium firefox-esr kiwix-tools python3-pyqt5
 
           # Identidade oficial do KerigmaOS
           cat << 'OSRELEASE' > /etc/os-release
