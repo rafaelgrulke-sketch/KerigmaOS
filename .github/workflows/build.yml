@@ -1,7 +1,7 @@
-name: Build RhemaOS ISO
+name: Build KerigmaOS ISO
 
 on:
-  workflow_dispatch: # Permite que você clique em um botão para gerar a ISO quando quiser
+  workflow_dispatch:
 
 jobs:
   build-iso:
@@ -10,42 +10,61 @@ jobs:
       - name: Checkout do código
         uses: actions/checkout@v4
 
-      - name: Instalar dependências de compilação
+      - name: Instalar dependências de compilação no host
         run: |
           sudo apt-get update
           sudo apt-get install -y debootstrap squashfs-tools xorriso grub-pc-bin \
-            grub-efi-amd64-bin mtools live-build libwayland-dev
+            grub-efi-amd64-bin mtools live-build
 
-      - name: Criar script de Build
+      - name: Criar script de Build do KerigmaOS Dev Edition
         run: |
           cat << 'EOF' > build.sh
           #!/usr/bin/env bash
           set -e
-          WORK_DIR="/opt/rhemaos-build"
+          WORK_DIR="/opt/kerigmaos-build"
           ROOTFS="$WORK_DIR/rootfs"
           ISO_DIR="$WORK_DIR/iso"
-          ISO_NAME="RhemaOS-1.0-Beta-amd64.iso"
+          ISO_NAME="KerigmaOS-1.0-Dev-amd64.iso"
 
           sudo mkdir -p "$ROOTFS" "$ISO_DIR/live" "$ISO_DIR/boot/grub"
 
-          echo "=== 1. Debootstrap ==="
+          echo "=== 1. Debootstrap (Debian Bookworm Minimal) ==="
           sudo debootstrap --variant=minbase --arch=amd64 bookworm "$ROOTFS" http://deb.debian.org/debian/
 
-          echo "=== 2. Montar sistemas virtuais ==="
+          echo "=== 2. Integrando Kerigma Welcome e Atalhos estilo Windows ==="
+          sudo mkdir -p "$ROOTFS/usr/local/bin" \
+                        "$ROOTFS/usr/share/applications" \
+                        "$ROOTFS/etc/skel/.config/autostart"
+
+          sudo cp apps/kerigma-welcome/kerigma-welcome.py "$ROOTFS/usr/local/bin/kerigma-welcome"
+          sudo chmod +x "$ROOTFS/usr/local/bin/kerigma-welcome"
+          sudo cp apps/kerigma-welcome/kerigma-welcome.desktop "$ROOTFS/usr/share/applications/"
+          sudo cp apps/kerigma-welcome/kerigma-welcome.desktop "$ROOTFS/etc/skel/.config/autostart/"
+
+          # Pré-configurando atalhos Win+R (KRunner) e Win+Shift+S (Spectacle)
+          cat << 'SHORTCUTS' | sudo tee "$ROOTFS/etc/skel/.config/kglobalshortcutsrc" > /dev/null
+          [org.kde.krunner.desktop]
+          _launch=Alt+Space\tAlt+F2\tMeta+R\tSearch,Alt+Space\tAlt+F2\tSearch,KRunner
+
+          [org.kde.spectacle.desktop]
+          RectangularRegionScreenShot=Meta+Shift+S,Meta+Shift+S,Capture Rectangular Region
+          SHORTCUTS
+
+          echo "=== 3. Montando sistemas virtuais ==="
           sudo mount --bind /dev "$ROOTFS/dev"
           sudo mount --bind /dev/pts "$ROOTFS/dev/pts"
           sudo mount -t proc /proc "$ROOTFS/proc"
           sudo mount -t sysfs /sys "$ROOTFS/sys"
 
-          echo "=== 3. Chroot Setup ==="
+          echo "=== 4. Configuração Chroot (KDE + Drivers + Dev Stack + IA + Kiwix) ==="
           cat << 'INNER_EOF' | sudo tee "$ROOTFS/tmp/setup.sh" > /dev/null
           #!/bin/bash
           export DEBIAN_FRONTEND=noninteractive
           export HOME=/root
           export LC_ALL=C
 
-          echo "rhema-os" > /etc/hostname
-          echo "127.0.0.1 localhost rhema-os" > /etc/hosts
+          echo "kerigma-os" > /etc/hostname
+          echo "127.0.0.1 localhost kerigma-os" > /etc/hosts
 
           cat << 'SOURCES' > /etc/apt/sources.list
           deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware
@@ -54,21 +73,62 @@ jobs:
           SOURCES
 
           apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl gnupg wget
+
+          # Repositório oficial VSCodium
+          wget -qO - https://gitlab.com/paulcarroty/vscodium-deb-rpm-repo/raw/master/pub.gpg \
+              | gpg --dearmor | dd of=/usr/share/keyrings/vscodium-archive-keyring.gpg
+          echo 'deb [ signed-by=/usr/share/keyrings/vscodium-archive-keyring.gpg ] https://download.vscodium.com/debs vscodium main' \
+              > /etc/apt/sources.list.d/vscodium.list
+
+          # Repositório oficial Node.js 20 LTS
+          curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+
+          apt-get update
           apt-get install -y --no-install-recommends \
               linux-image-amd64 live-boot live-boot-initramfs-tools systemd-sysv \
               grub-pc-bin grub-efi-amd64-bin xorriso squashfs-tools mtools \
-              sudo network-manager nano pipewire plymouth sddm \
-              plasma-desktop dolphin konsole plank calamares calamares-settings-debian
+              sudo ufw nano pipewire pipewire-pulse wireplumber plymouth sddm \
+              network-manager plasma-nm plasma-pa bluez bluedevil usbutils pciutils \
+              firmware-linux firmware-realtek firmware-iwlwifi firmware-atheros firmware-brcm80211 \
+              plasma-desktop dolphin konsole spectacle plank calamares calamares-settings-debian \
+              git zsh docker.io build-essential nodejs codium kiwix python3-pyqt5
 
-          # Criar usuário live
-          useradd -m -s /bin/bash rhema
-          echo "rhema:live" | chpasswd
-          usermod -aG sudo,video,audio rhema
-          echo "rhema ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/rhema
+          # Identidade oficial do KerigmaOS
+          cat << 'OSRELEASE' > /etc/os-release
+          PRETTY_NAME="KerigmaOS 1.0 Dev Edition"
+          NAME="KerigmaOS"
+          VERSION_ID="1.0"
+          VERSION="1.0 (Dev Edition)"
+          ID=kerigmaos
+          ID_LIKE=debian
+          HOME_URL="https://github.com/rafaelgrulke-sketch/KerigmaOS"
+          OSRELEASE
 
-          # Auto-login
+          # Configurar Firewall UFW por padrão
+          ufw default deny incoming
+          ufw default allow outgoing
+          ufw --force enable
+          systemctl enable ufw bluetooth NetworkManager
+
+          # Instalar motor Ollama (IA Local)
+          curl -fsSL https://ollama.com/install.sh | sh || true
+
+          # Configuração padrão do ZSH
+          cat << 'ZSHRC' > /etc/skel/.zshrc
+          PROMPT='%F{cyan}%n@kerigma-os%f:%F{blue}%~%f$ '
+          alias ll='ls -la --color=auto'
+          ZSHRC
+
+          # Criar usuário Live padrão com ZSH e Docker
+          useradd -m -s /usr/bin/zsh kerigma
+          echo "kerigma:live" | chpasswd
+          usermod -aG sudo,video,audio,docker,netdev,bluetooth kerigma
+          echo "kerigma ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/kerigma
+
+          # Auto-login no SDDM
           mkdir -p /etc/sddm.conf.d
-          echo -e "[Autologin]\nUser=rhema\nSession=plasma" > /etc/sddm.conf.d/autologin.conf
+          echo -e "[Autologin]\nUser=kerigma\nSession=plasma" > /etc/sddm.conf.d/autologin.conf
 
           apt-get clean
           rm -rf /var/lib/apt/lists/*
@@ -78,19 +138,19 @@ jobs:
           sudo chroot "$ROOTFS" /tmp/setup.sh
           sudo rm "$ROOTFS/tmp/setup.sh"
 
-          echo "=== Desmontando ==="
+          echo "=== 5. Desmontando binds ==="
           sudo umount -lf "$ROOTFS/dev/pts" || true
           sudo umount -lf "$ROOTFS/dev" || true
           sudo umount -lf "$ROOTFS/proc" || true
           sudo umount -lf "$ROOTFS/sys" || true
 
-          echo "=== 4. Compactando em SquashFS ==="
+          echo "=== 6. Compactando sistema em SquashFS ==="
           sudo mksquashfs "$ROOTFS" "$ISO_DIR/live/filesystem.squashfs" -comp xz -e boot
 
           sudo cp "$ROOTFS/boot/vmlinuz-"* "$ISO_DIR/live/vmlinuz"
           sudo cp "$ROOTFS/boot/initrd.img-"* "$ISO_DIR/live/initrd"
 
-          echo "=== 5. Configurando o GRUB da ISO ==="
+          echo "=== 7. Configurando GRUB e gerando ISO ==="
           sudo mkdir -p "$ISO_DIR/boot/grub"
           cat << 'GRUB_EOF' | sudo tee "$ISO_DIR/boot/grub/grub.cfg" > /dev/null
           insmod part_gpt
@@ -99,27 +159,26 @@ jobs:
           insmod ext2
           set default="0"
           set timeout=5
-          menuentry "RhemaOS 1.0 (Live)" {
+          menuentry "KerigmaOS 1.0 Dev Edition (Live)" {
               linux /live/vmlinuz boot=live quiet splash ---
               initrd /live/initrd
           }
-          menuentry "Instalar RhemaOS" {
+          menuentry "Instalar KerigmaOS no Disco" {
               linux /live/vmlinuz boot=live quiet splash calamares ---
               initrd /live/initrd
           }
           GRUB_EOF
 
-          echo "=== 6. Gerando ISO final ==="
           sudo grub-mkrescue -o "$ISO_NAME" "$ISO_DIR"
           EOF
           chmod +x build.sh
 
-      - name: Executar o build
+      - name: Executar o build da ISO
         run: ./build.sh
 
-      - name: Upload da ISO do RhemaOS
+      - name: Upload da ISO do KerigmaOS Dev Edition
         uses: actions/upload-artifact@v4
         with:
-          name: RhemaOS-Beta-ISO
-          path: RhemaOS-1.0-Beta-amd64.iso
+          name: KerigmaOS-Dev-ISO
+          path: KerigmaOS-1.0-Dev-amd64.iso
           retention-days: 5
