@@ -10,6 +10,13 @@ jobs:
       - name: Checkout do código
         uses: actions/checkout@v4
 
+      - name: Verificar arquivos do Kerigma Welcome
+        run: |
+          if [ ! -f "apps/kerigma-welcome/kerigma-welcome.py" ] || [ ! -f "apps/kerigma-welcome/kerigma-welcome.desktop" ]; then
+            echo "ERRO: Crie primeiro os arquivos apps/kerigma-welcome/kerigma-welcome.py e kerigma-welcome.desktop no repositorio!"
+            exit 1
+          fi
+
       - name: Instalar dependências de compilação no host
         run: |
           sudo apt-get update
@@ -59,6 +66,7 @@ jobs:
           echo "=== 4. Configuração Chroot (KDE + Drivers + Dev Stack + IA + Kiwix) ==="
           cat << 'INNER_EOF' | sudo tee "$ROOTFS/tmp/setup.sh" > /dev/null
           #!/bin/bash
+          set -e
           export DEBIAN_FRONTEND=noninteractive
           export HOME=/root
           export LC_ALL=C
@@ -77,12 +85,12 @@ jobs:
 
           # Repositório oficial VSCodium
           wget -qO - https://gitlab.com/paulcarroty/vscodium-deb-rpm-repo/raw/master/pub.gpg \
-              | gpg --dearmor | dd of=/usr/share/keyrings/vscodium-archive-keyring.gpg
+              | gpg --dearmor -o /usr/share/keyrings/vscodium-archive-keyring.gpg
           echo 'deb [ signed-by=/usr/share/keyrings/vscodium-archive-keyring.gpg ] https://download.vscodium.com/debs vscodium main' \
               > /etc/apt/sources.list.d/vscodium.list
 
-          # Repositório oficial Node.js 20 LTS
-          curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+          # Repositório oficial Node.js 22 LTS
+          curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 
           apt-get update
           apt-get install -y --no-install-recommends \
@@ -105,10 +113,10 @@ jobs:
           HOME_URL="https://github.com/rafaelgrulke-sketch/KerigmaOS"
           OSRELEASE
 
-          # Configurar Firewall UFW por padrão
-          ufw default deny incoming
-          ufw default allow outgoing
-          ufw --force enable
+          # Configurar Firewall UFW de forma segura para ambiente chroot
+          ufw default deny incoming || true
+          ufw default allow outgoing || true
+          sed -i 's/ENABLED=no/ENABLED=yes/' /etc/ufw/ufw.conf
           systemctl enable ufw bluetooth NetworkManager
 
           # Instalar motor Ollama (IA Local)
