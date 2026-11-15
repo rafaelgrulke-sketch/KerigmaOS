@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Kerigma Welcome
+Comment=Assistente de configuração inicial de IA e Wikipédia Offline do KerigmaOS
+Exec=/usr/local/bin/kerigma-welcome
+Icon=preferences-system
+Terminal=false
+Categories=System;Utility;
