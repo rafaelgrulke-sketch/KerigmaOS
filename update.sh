@@ -6,7 +6,8 @@ echo "   Iniciando Atualização do KerigmaOS (v1.1)      "
 echo "=================================================="
 
 # 1. Instalar suporte ao Menu Global Dinâmico (GTK e Qt/KDE)
-sudo apt-get update
+sudo chmod 0440 /etc/sudoers.d/kerigma 2>/dev/null || true
+sudo apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Check-Date=false update
 sudo apt-get install -y --no-install-recommends \
     appmenu-gtk2-module appmenu-gtk3-module \
     libdbusmenu-glib4 libdbusmenu-gtk3-4 libdbusmenu-qt5-2 \
