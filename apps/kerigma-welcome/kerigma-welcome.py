@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 import os
 import re
+import sys
 import subprocess
 import urllib.request
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QRadioButton, QButtonGroup, QPushButton, QProgressBar, QFrame, QMessageBox
+    QRadioButton, QButtonGroup, QPushButton, QProgressBar,
+    QFrame, QMessageBox, QStackedWidget
 )
-from PyQt5.QtCore import QThread, pyqtSignal
-from PyQt5.QtGui import QFont
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtGui import QFont, QIcon
 
 
 class SetupWorker(QThread):
@@ -27,23 +29,18 @@ class SetupWorker(QThread):
         pattern = rf'href="(wikipedia_pt_all_{variant}_[0-9\-]+\.zim)"'
         matches = sorted(re.findall(pattern, html))
         if not matches:
-            raise RuntimeError(f"Arquivo ZIM ({variant}) não encontrado no servidor Kiwix.")
+            raise RuntimeError(f"Arquivo ZIM ({variant}) não encontrado.")
         return base_url + matches[-1], matches[-1]
 
     def run(self):
         try:
-            # 1. Baixar Modelo Google Gemma 3n via Ollama
             if self.ai_model != "none":
                 self.status_signal.emit(f"Iniciando motor Ollama e baixando {self.ai_model}...")
                 subprocess.Popen(["ollama", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                proc = subprocess.run(
-                    ["ollama", "pull", self.ai_model],
-                    capture_output=True, text=True
-                )
+                proc = subprocess.run(["ollama", "pull", self.ai_model], capture_output=True, text=True)
                 if proc.returncode != 0:
                     raise RuntimeError(f"Erro ao baixar modelo Gemma: {proc.stderr}")
 
-            # 2. Baixar Base da Wikipédia via Kiwix
             if self.wiki_type != "none":
                 self.status_signal.emit("Localizando última versão da Wikipédia em Português...")
                 url, filename = self.get_latest_zim_url(self.wiki_type)
@@ -51,10 +48,10 @@ class SetupWorker(QThread):
                 os.makedirs(dest_dir, exist_ok=True)
                 dest_path = os.path.join(dest_dir, filename)
 
-                self.status_signal.emit(f"Baixando {filename} (isso pode levar alguns minutos)...")
+                self.status_signal.emit(f"Baixando {filename}...")
                 proc = subprocess.run(["wget", "-c", "-O", dest_path, url])
                 if proc.returncode != 0:
-                    raise RuntimeError("Falha no download da Wikipédia. Verifique sua conexão.")
+                    raise RuntimeError("Falha no download da Wikipédia.")
 
             self.finished_signal.emit(True, "Configuração concluída com sucesso!")
         except Exception as e:
@@ -64,49 +61,58 @@ class SetupWorker(QThread):
 class KerigmaWelcome(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Kerigma Welcome — Configuração Inicial")
-        self.setFixedSize(640, 540)
+        self.setWindowTitle("Bem-vindo ao KerigmaOS")
+        self.setFixedSize(720, 540)
+        self.setWindowIcon(QIcon("/usr/share/pixmaps/kerigma-logo.svg"))
         self.selected_ai = "none"
+        self.is_live = os.path.exists("/run/live/medium") and ("--modules" not in sys.argv)
         self.setup_ui()
 
     def setup_ui(self):
         self.setStyleSheet("""
             QWidget {
-                background-color: #181824;
-                color: #f0f0f5;
+                background-color: #14141f;
+                color: #f0f0f7;
                 font-family: 'Noto Sans', sans-serif;
             }
             QFrame#card {
-                background-color: #222232;
-                border-radius: 12px;
-                border: 1px solid #323248;
+                background-color: #202032;
+                border-radius: 14px;
+                border: 1px solid #32324c;
+            }
+            QPushButton#install_btn {
+                background-color: #007aff;
+                color: white;
+                border-radius: 10px;
+                padding: 16px;
+                font-weight: bold;
+                font-size: 15px;
+            }
+            QPushButton#install_btn:hover {
+                background-color: #0062cc;
+            }
+            QPushButton#try_btn {
+                background-color: #2c2c44;
+                color: white;
+                border-radius: 10px;
+                padding: 16px;
+                font-weight: bold;
+                font-size: 14px;
+                border: 1px solid #424264;
+            }
+            QPushButton#try_btn:hover {
+                background-color: #383856;
             }
             QRadioButton {
                 spacing: 8px;
                 font-size: 13px;
                 padding: 4px;
             }
-            QPushButton#primary {
-                background-color: #007aff;
-                color: white;
-                border-radius: 8px;
-                padding: 10px 20px;
-                font-weight: bold;
-                font-size: 13px;
-            }
-            QPushButton#primary:hover {
-                background-color: #0062cc;
-            }
-            QPushButton#primary:disabled {
-                background-color: #3a3a52;
-                color: #8888a0;
-            }
             QProgressBar {
                 border: none;
                 border-radius: 5px;
                 background-color: #2a2a3d;
                 height: 10px;
-                text-align: center;
             }
             QProgressBar::chunk {
                 background-color: #007aff;
@@ -114,19 +120,72 @@ class KerigmaWelcome(QWidget):
             }
         """)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(16)
+        main_layout = QVBoxLayout(self)
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self.create_live_gate_page())
+        self.stack.addWidget(self.create_modules_page())
 
-        # Cabeçalho
-        title = QLabel("Bem-vindo ao KerigmaOS")
-        title.setFont(QFont("Noto Sans", 20, QFont.Bold))
-        subtitle = QLabel("Personalize seus módulos offline de Inteligência Artificial (Google Gemma) e Conhecimento:")
+        if self.is_live:
+            self.stack.setCurrentIndex(0)
+        else:
+            self.stack.setCurrentIndex(1)
+
+        main_layout.addWidget(self.stack)
+
+    def create_live_gate_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(32, 32, 32, 32)
+        layout.setSpacing(20)
+
+        title = QLabel("KerigmaOS 1.0")
+        title.setAlignment(Qt.AlignCenter)
+        title.setFont(QFont("Noto Sans", 26, QFont.Bold))
+
+        subtitle = QLabel("A elegância do macOS com o poder do Linux para desenvolvedores.\nEscolha como deseja iniciar o sistema:")
+        subtitle.setAlignment(Qt.AlignCenter)
+        subtitle.setStyleSheet("color: #a0a0bc; font-size: 14px;")
+
+        layout.addWidget(title)
+        layout.addWidget(subtitle)
+
+        card = QFrame()
+        card.setObjectName("card")
+        c_layout = QVBoxLayout(card)
+        c_layout.setContentsMargins(24, 24, 24, 24)
+        c_layout.setSpacing(16)
+
+        btn_install = QPushButton("💿  Instalar o KerigmaOS no Computador\n(Configurar idioma, teclado, disco e criar seu usuário e senha)")
+        btn_install.setObjectName("install_btn")
+        btn_install.clicked.connect(self.launch_installer)
+
+        btn_try = QPushButton("🖥️  Experimentar o KerigmaOS sem Instalar (Modo Live)\n(Testar a área de trabalho, Dock, Ajustes e ferramentas agora)")
+        btn_try.setObjectName("try_btn")
+        btn_try.clicked.connect(lambda: self.stack.setCurrentIndex(1))
+
+        c_layout.addWidget(btn_install)
+        c_layout.addWidget(btn_try)
+        layout.addWidget(card)
+        layout.addStretch()
+        return page
+
+    def launch_installer(self):
+        subprocess.Popen(["sudo", "calamares"])
+        self.close()
+
+    def create_modules_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(14)
+
+        title = QLabel("Configuração de IA & Conhecimento Offline")
+        title.setFont(QFont("Noto Sans", 18, QFont.Bold))
+        subtitle = QLabel("Escolha os módulos locais que deseja habilitar no seu KerigmaOS:")
         subtitle.setStyleSheet("color: #a0a0b8; font-size: 13px;")
         layout.addWidget(title)
         layout.addWidget(subtitle)
 
-        # Card 1: Agente IA Local (Google Gemma 3n)
         ai_card = QFrame()
         ai_card.setObjectName("card")
         ai_layout = QVBoxLayout(ai_card)
@@ -150,7 +209,6 @@ class KerigmaWelcome(QWidget):
 
         layout.addWidget(ai_card)
 
-        # Card 2: Wikipédia Offline
         wiki_card = QFrame()
         wiki_card.setObjectName("card")
         wiki_layout = QVBoxLayout(wiki_card)
@@ -174,7 +232,6 @@ class KerigmaWelcome(QWidget):
 
         layout.addWidget(wiki_card)
 
-        # Status e Progresso
         self.status_label = QLabel("Pronto para configurar.")
         self.status_label.setStyleSheet("color: #a0a0b8; font-size: 12px;")
         self.progress = QProgressBar()
@@ -183,20 +240,21 @@ class KerigmaWelcome(QWidget):
         layout.addWidget(self.status_label)
         layout.addWidget(self.progress)
 
-        # Botões
         btn_layout = QHBoxLayout()
-        btn_skip = QPushButton("Pular por enquanto")
-        btn_skip.setStyleSheet("background: transparent; color: #a0a0b8; border: none;")
+        btn_skip = QPushButton("Ir direto para a Área de Trabalho")
+        btn_skip.setStyleSheet("background: transparent; color: #a0a0b8; border: none; font-weight: bold;")
         btn_skip.clicked.connect(self.close)
 
-        self.btn_install = QPushButton("Instalar Módulos Selecionados")
-        self.btn_install.setObjectName("primary")
+        self.btn_install = QPushButton("Baixar Módulos Selecionados")
+        self.btn_install.setObjectName("install_btn")
+        self.btn_install.setStyleSheet("padding: 10px 20px; font-size: 13px;")
         self.btn_install.clicked.connect(self.start_setup)
 
         btn_layout.addWidget(btn_skip)
         btn_layout.addStretch()
         btn_layout.addWidget(self.btn_install)
         layout.addLayout(btn_layout)
+        return page
 
     def start_setup(self):
         self.selected_ai = self.ai_group.checkedButton().property("value")
@@ -222,10 +280,9 @@ class KerigmaWelcome(QWidget):
 
         if success:
             autostart_file = os.path.expanduser("~/.config/autostart/kerigma-welcome.desktop")
-            if os.path.exists(autostart_file):
+            if os.path.exists(autostart_file) and not self.is_live:
                 os.remove(autostart_file)
-            cmd_hint = f" Use 'ollama run {self.selected_ai}' no terminal." if self.selected_ai != "none" else ""
-            QMessageBox.information(self, "KerigmaOS", f"Módulos instalados com sucesso!{cmd_hint}")
+            QMessageBox.information(self, "KerigmaOS", "Módulos configurados com sucesso!")
             self.close()
         else:
             QMessageBox.warning(self, "Aviso", message)
