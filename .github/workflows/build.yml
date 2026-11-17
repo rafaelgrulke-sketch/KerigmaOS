@@ -19,14 +19,14 @@ jobs:
             fi
           done
 
-      - name: Liberar espaço em disco no servidor do GitHub e instalar ferramentas
+      - name: Liberar espaço em disco e instalar ferramentas
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost
-          sudo apt-get update
+          sudo apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Check-Date=false update
           sudo apt-get install -y debootstrap squashfs-tools xorriso grub-pc-bin \
             grub-efi-amd64-bin mtools live-build
 
-      - name: Criar script de Build do KerigmaOS Completo
+      - name: Criar script de Build do KerigmaOS v1.1
         run: |
           cat << 'EOF' > build.sh
           #!/usr/bin/env bash
@@ -41,16 +41,18 @@ jobs:
           echo "=== 1. Debootstrap (Debian Bookworm) ==="
           sudo debootstrap --variant=minbase --arch=amd64 bookworm "$ROOTFS" http://deb.debian.org/debian/
 
-          echo "=== 2. Criando Identidade Visual, Dock, Temas e Apps do KerigmaOS ==="
+          echo "=== 2. Criando Identidade Visual, Apps e Ferramentas OTA ==="
           sudo mkdir -p "$ROOTFS/usr/local/bin" \
                         "$ROOTFS/usr/share/applications" \
                         "$ROOTFS/usr/share/pixmaps" \
                         "$ROOTFS/usr/share/wallpapers" \
                         "$ROOTFS/etc/skel/.config/autostart" \
                         "$ROOTFS/etc/skel/.config/plank/dock1/launchers" \
-                        "$ROOTFS/etc/skel/Desktop"
+                        "$ROOTFS/etc/skel/.config/gtk-3.0" \
+                        "$ROOTFS/etc/skel/Desktop" \
+                        "$ROOTFS/etc/calamares/branding/kerigmaos"
 
-          # Símbolo Oficial do KerigmaOS (SVG Vetorial)
+          # Símbolo Oficial
           cat << 'LOGOSVG' | sudo tee "$ROOTFS/usr/share/pixmaps/kerigma-logo.svg" > /dev/null
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
             <defs>
@@ -64,23 +66,28 @@ jobs:
           </svg>
           LOGOSVG
 
-          # Papel de Parede Oficial KerigmaOS
+          # Ícone Launchpad
+          cat << 'LAUNCHSVG' | sudo tee "$ROOTFS/usr/share/pixmaps/kerigma-launchpad.svg" > /dev/null
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+            <defs><linearGradient id="lg" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#1e1e2e"/><stop offset="100%" stop-color="#2d2d44"/></linearGradient></defs>
+            <rect width="112" height="112" x="8" y="8" rx="26" fill="url(#lg)" stroke="#4a4a6a" stroke-width="3"/>
+            <rect x="28" y="28" width="20" height="20" rx="5" fill="#ff3b30"/><rect x="54" y="28" width="20" height="20" rx="5" fill="#4cd964"/><rect x="80" y="28" width="20" height="20" rx="5" fill="#007aff"/>
+            <rect x="28" y="54" width="20" height="20" rx="5" fill="#ff9500"/><rect x="54" y="54" width="20" height="20" rx="5" fill="#5856d6"/><rect x="80" y="54" width="20" height="20" rx="5" fill="#5ac8fa"/>
+            <rect x="28" y="80" width="20" height="20" rx="5" fill="#ffcc00"/><rect x="54" y="80" width="20" height="20" rx="5" fill="#ff2d55"/><rect x="80" y="80" width="20" height="20" rx="5" fill="#34c759"/>
+          </svg>
+          LAUNCHSVG
+
+          # Papel de Parede
           cat << 'WALLSVG' | sudo tee "$ROOTFS/usr/share/wallpapers/kerigma-wallpaper.svg" > /dev/null
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080">
-            <defs>
-              <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-                <stop offset="0%" stop-color="#0d0d1a"/>
-                <stop offset="50%" stop-color="#1a1a3a"/>
-                <stop offset="100%" stop-color="#004080"/>
-              </linearGradient>
-            </defs>
+            <defs><linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#0d0d1a"/><stop offset="50%" stop-color="#1a1a3a"/><stop offset="100%" stop-color="#004080"/></linearGradient></defs>
             <rect width="1920" height="1080" fill="url(#bg)"/>
             <circle cx="960" cy="540" r="420" fill="#007aff" opacity="0.12"/>
             <circle cx="1350" cy="320" r="280" fill="#5856d6" opacity="0.15"/>
           </svg>
           WALLSVG
 
-          # Instalar Kerigma Welcome e Kerigma Settings
+          # Apps Kerigma Welcome e Settings
           sudo cp apps/kerigma-welcome/kerigma-welcome.py "$ROOTFS/usr/local/bin/kerigma-welcome"
           sudo chmod +x "$ROOTFS/usr/local/bin/kerigma-welcome"
           sudo cp apps/kerigma-welcome/kerigma-welcome.desktop "$ROOTFS/usr/share/applications/"
@@ -88,23 +95,22 @@ jobs:
 
           sudo cp apps/kerigma-settings/kerigma-settings.py "$ROOTFS/usr/local/bin/kerigma-settings"
           sudo chmod +x "$ROOTFS/usr/local/bin/kerigma-settings"
-
+          
           cat << 'SETDESKTOP' | sudo tee "$ROOTFS/usr/share/applications/kerigma-settings.desktop" > /dev/null
           [Desktop Entry]
           Type=Application
-          Name=Ajustes do Sistema (Kerigma)
-          Comment=Personalização estilo macOS e configurações do KerigmaOS
+          Name=Ajustes do Sistema
           Exec=/usr/local/bin/kerigma-settings
           Icon=/usr/share/pixmaps/kerigma-logo.svg
           Terminal=false
           Categories=System;Settings;
           SETDESKTOP
 
+          # Instalador Calamares (Atalho Único)
           cat << 'INSTDESKTOP' | sudo tee "$ROOTFS/usr/share/applications/kerigma-installer.desktop" > /dev/null
           [Desktop Entry]
           Type=Application
           Name=Instalar o KerigmaOS
-          Comment=Instalar o sistema definitivamente no disco rígido
           Exec=sudo calamares
           Icon=/usr/share/pixmaps/kerigma-logo.svg
           Terminal=false
@@ -112,44 +118,135 @@ jobs:
           INSTDESKTOP
 
           sudo cp "$ROOTFS/usr/share/applications/kerigma-installer.desktop" "$ROOTFS/etc/skel/Desktop/"
-          sudo cp "$ROOTFS/usr/share/applications/kerigma-settings.desktop" "$ROOTFS/etc/skel/Desktop/"
-          sudo chmod +x "$ROOTFS/etc/skel/Desktop/"*.desktop
 
-          # Script da Wikipédia Offline
-          cat << 'WIKISCRIPT' | sudo tee "$ROOTFS/usr/local/bin/kerigma-wiki" > /dev/null
+          # Calamares - Tema KerigmaOS Unificado
+          cat << 'BRANDING' | sudo tee "$ROOTFS/etc/calamares/branding/kerigmaos/branding.desc" > /dev/null
+          componentName: kerigmaos
+          welcomeStyleBanner: true
+          welcomeExpandingLogo: true
+          windowExpands: true
+          showSupportUrl: false
+          showKnownIssuesUrl: false
+          showReleaseNotesUrl: false
+          showImagedSlideShow: true
+
+          brandingCurve:
+            ProductFullName: "KerigmaOS 1.0"
+            ProductName: "KerigmaOS"
+            ShortProductName: "KerigmaOS"
+            Version: "1.0 Dev Edition"
+            ShortVersion: "1.0"
+            VersionedName: "KerigmaOS 1.0"
+            ShortVersionedName: "KerigmaOS 1.0"
+            BootloaderEntryName: "KerigmaOS"
+            SlideshowAPI: 2
+
+          style:
+            SidebarBackground: "#1e1e2e"
+            SidebarText: "#c8c8d8"
+            SidebarTextCurrent: "#ffffff"
+            SidebarBackgroundCurrent: "#007aff"
+
+          images:
+            productLogo: "/usr/share/pixmaps/kerigma-logo.svg"
+            productIcon: "/usr/share/pixmaps/kerigma-logo.svg"
+            productLogoDark: "/usr/share/pixmaps/kerigma-logo.svg"
+            windowIcon: "/usr/share/pixmaps/kerigma-logo.svg"
+            bannerLogo: "/usr/share/pixmaps/kerigma-logo.svg"
+          BRANDING
+
+          # Ferramentas OTA e Launchpad
+          cat << 'UPDATESCRIPT' | sudo tee "$ROOTFS/usr/local/bin/kerigma-update" > /dev/null
           #!/usr/bin/env bash
-          ZIM_FILE=$(ls "$HOME/Documentos/Wikipedia/"*.zim "$HOME/Documents/Wikipedia/"*.zim 2>/dev/null | head -n 1)
-          if [ -z "$ZIM_FILE" ]; then
-              /usr/local/bin/kerigma-welcome --modules
-              exit 0
-          fi
-          pkill -f "kiwix-serve" || true
-          kiwix-serve --port=8080 "$ZIM_FILE" &
-          sleep 1
-          xdg-open "http://localhost:8080"
-          WIKISCRIPT
-          sudo chmod +x "$ROOTFS/usr/local/bin/kerigma-wiki"
+          echo "Buscando atualizações oficiais no repositório do KerigmaOS..."
+          curl -fsSL https://raw.githubusercontent.com/rafaelgrulke-sketch/KerigmaOS/main/update.sh | sudo bash
+          UPDATESCRIPT
+          sudo chmod +x "$ROOTFS/usr/local/bin/kerigma-update"
 
-          cat << 'WIKIDESKTOP' | sudo tee "$ROOTFS/usr/share/applications/kerigma-wiki.desktop" > /dev/null
+          cat << 'UPDATEDESK' | sudo tee "$ROOTFS/usr/share/applications/kerigma-update.desktop" > /dev/null
           [Desktop Entry]
           Type=Application
-          Name=Wikipédia Offline (Kerigma)
-          Comment=Abrir enciclopédia offline via Kiwix
-          Exec=/usr/local/bin/kerigma-wiki
-          Icon=internet-web-browser
+          Name=Atualizar KerigmaOS
+          Exec=konsole -e /usr/local/bin/kerigma-update
+          Icon=/usr/share/pixmaps/kerigma-logo.svg
           Terminal=false
-          Categories=Education;Reference;
-          WIKIDESKTOP
+          Categories=System;
+          UPDATEDESK
 
-          # Popular Ícones na Dock Inferior (Plank) estilo macOS
-          for app in "kerigma-settings" "org.kde.dolphin" "org.kde.discover" "org.kde.konsole" "codium" "firefox-esr" "kerigma-wiki" "kerigma-installer"; do
+          # Widget de Título de Janela (Plasmoid)
+          PLASMOID_DIR="$ROOTFS/usr/share/plasma/plasmoids/org.kerigma.windowtitle"
+          sudo mkdir -p "$PLASMOID_DIR/contents/ui"
+          
+          cat << 'METAEOF' | sudo tee "$PLASMOID_DIR/metadata.desktop" > /dev/null
+          [Desktop Entry]
+          Name=Kerigma Active App Title
+          Type=Service
+          X-KDE-ServiceTypes=Plasma/Applet
+          X-Plasma-API=declarativeappletscript
+          X-Plasma-MainScript=ui/main.qml
+          X-KDE-PluginInfo-Name=org.kerigma.windowtitle
+          X-KDE-PluginInfo-Version=1.0
+          METAEOF
+
+          cat << 'QMLEOF' | sudo tee "$PLASMOID_DIR/contents/ui/main.qml" > /dev/null
+          import QtQuick 2.0
+          import QtQuick.Layouts 1.1
+          import org.kde.plasma.plasmoid 2.0
+          import org.kde.plasma.core 2.0 as PlasmaCore
+          import org.kde.plasma.components 2.0 as PlasmaComponents
+          import org.kde.taskmanager 0.1 as TaskManager
+
+          Item {
+              id: root
+              Layout.preferredWidth: titleLabel.implicitWidth + 18
+              Layout.minimumWidth: titleLabel.implicitWidth + 18
+              Layout.fillHeight: true
+              Plasmoid.preferredRepresentation: Plasmoid.fullRepresentation
+              TaskManager.ActivityInfo { id: activityInfo }
+              TaskManager.VirtualDesktopInfo { id: virtualDesktopInfo }
+              TaskManager.TasksModel {
+                  id: tasksModel
+                  sortMode: TaskManager.TasksModel.SortVirtualDesktop
+                  groupMode: TaskManager.TasksModel.GroupDisabled
+                  activity: activityInfo.currentActivity
+                  virtualDesktop: virtualDesktopInfo.currentDesktop
+                  filterByActivity: true
+                  filterByVirtualDesktop: true
+              }
+              function activeAppTitle() {
+                  for (var i = 0; i < tasksModel.count; i++) {
+                      var idx = tasksModel.index(i, 0);
+                      if (tasksModel.data(idx, TaskManager.AbstractTasksModel.IsActive)) {
+                          var app = tasksModel.data(idx, TaskManager.AbstractTasksModel.AppName);
+                          if (app && app.length > 0) return app;
+                      }
+                  }
+                  return "Finder";
+              }
+              PlasmaComponents.Label {
+                  id: titleLabel
+                  anchors.centerIn: parent
+                  text: activeAppTitle()
+                  font.bold: true
+                  font.pixelSize: 13
+              }
+              Connections {
+                  target: tasksModel
+                  function onActiveTaskChanged() { titleLabel.text = activeAppTitle(); }
+                  function onDataChanged() { titleLabel.text = activeAppTitle(); }
+                  function onCountChanged() { titleLabel.text = activeAppTitle(); }
+              }
+          }
+          QMLEOF
+
+          # Ícones e Dock padrão (Plank)
+          for app in "kerigma-update" "kerigma-settings" "org.kde.dolphin" "org.kde.discover" "org.kde.konsole" "firefox-esr" "kerigma-installer"; do
             cat << DOCKITEM | sudo tee "$ROOTFS/etc/skel/.config/plank/dock1/launchers/${app}.dockitem" > /dev/null
           [PlankDockItemPreferences]
           Launcher=file:///usr/share/applications/${app}.desktop
           DOCKITEM
           done
 
-          # Botões na esquerda estilo macOS + Tecla Windows abre Menu Iniciar
           cat << 'KWINRC' | sudo tee "$ROOTFS/etc/skel/.config/kwinrc" > /dev/null
           [org.kde.kdecoration2]
           ButtonsOnLeft=XIA
@@ -160,38 +257,29 @@ jobs:
           Meta=org.kde.plasmashell,/PlasmaShell,org.kde.PlasmaShell,activateLauncherMenu
           KWINRC
 
-          # Tema Escuro Padrão KerigmaOS
           cat << 'KDEGLOBALS' | sudo tee "$ROOTFS/etc/skel/.config/kdeglobals" > /dev/null
           [General]
           ColorScheme=BreezeDark
           Name=KerigmaOS Dark
           widgetStyle=Breeze
-
           [Icons]
           Theme=breeze-dark
-
           [KDE]
           LookAndFeelPackage=org.kde.breezedark.desktop
           SingleClick=false
           KDEGLOBALS
 
-          # Atalhos estilo Windows (Win+R, Win+Shift+S, Ctrl+Esc)
-          cat << 'SHORTCUTS' | sudo tee "$ROOTFS/etc/skel/.config/kglobalshortcutsrc" > /dev/null
-          [org.kde.krunner.desktop]
-          _launch=Alt+Space\tAlt+F2\tMeta+R\tSearch,Alt+Space\tAlt+F2\tSearch,KRunner
+          cat << 'GTKINI' | sudo tee "$ROOTFS/etc/skel/.config/gtk-3.0/settings.ini" > /dev/null
+          [Settings]
+          gtk-application-prefer-dark-theme=1
+          gtk-shell-shows-app-menu=1
+          gtk-shell-shows-menubar=1
+          GTKINI
 
-          [org.kde.spectacle.desktop]
-          RectangularRegionScreenShot=Meta+Shift+S,Meta+Shift+S,Capture Rectangular Region
-          SHORTCUTS
-
-          # Iniciar Dock com Zoom ativado e Pastas em Português no primeiro login
-          cat << 'PLANKAUTO' | sudo tee "$ROOTFS/etc/skel/.config/autostart/plank.desktop" > /dev/null
-          [Desktop Entry]
-          Type=Application
-          Name=Kerigma Dock
-          Exec=sh -c "xdg-user-dirs-update; dconf write /net/launchpad/plank/docks/dock1/zoom-enabled true; dconf write /net/launchpad/plank/docks/dock1/icon-size 48; plank"
-          Terminal=false
-          PLANKAUTO
+          cat << 'GTKENV' | sudo tee "$ROOTFS/etc/profile.d/kerigma-appmenu.sh" > /dev/null
+          export GTK_MODULES="appmenu-gtk-module"
+          export UBUNTU_MENUPROXY=1
+          GTKENV
 
           echo "=== 3. Montando sistemas virtuais ==="
           sudo mount --bind /dev "$ROOTFS/dev"
@@ -216,15 +304,13 @@ jobs:
           deb http://deb.debian.org/debian bookworm-updates main contrib non-free non-free-firmware
           SOURCES
 
-          apt-get update
+          apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Check-Date=false update
 
-          # Configurar Idioma Português do Brasil (pt_BR.UTF-8)
           apt-get install -y --no-install-recommends locales
           sed -i 's/# pt_BR.UTF-8 UTF-8/pt_BR.UTF-8 UTF-8/' /etc/locale.gen
           locale-gen
           echo 'LANG=pt_BR.UTF-8' > /etc/default/locale
 
-          # Instalar Sistema Completo (Xorg, KDE, Áudio, Rede, Discos, Loja, Multimídia, Impressoras e Dev)
           apt-get install -y --no-install-recommends \
               ca-certificates curl gnupg wget sudo ufw nano \
               linux-image-amd64 live-boot live-boot-initramfs-tools systemd-sysv \
@@ -234,6 +320,8 @@ jobs:
               plasma-desktop plasma-workspace systemsettings kwin-x11 \
               breeze-gtk-theme kde-config-gtk-style polkit-kde-agent-1 powerdevil upower \
               xdg-user-dirs xdg-utils dconf-cli \
+              appmenu-gtk2-module appmenu-gtk3-module \
+              libdbusmenu-glib4 libdbusmenu-gtk3-4 libdbusmenu-qt5-2 \
               pipewire pipewire-pulse pipewire-alsa wireplumber alsa-utils pavucontrol \
               network-manager plasma-nm plasma-pa bluez bluedevil usbutils pciutils \
               firmware-linux firmware-realtek firmware-iwlwifi firmware-atheros firmware-brcm80211 firmware-misc-nonfree \
@@ -248,42 +336,60 @@ jobs:
               python3-pyqt5 libqt5svg5 qdbus-qt5 htop neofetch \
               spice-vdagent qemu-guest-agent
 
-          # Habilitar repositório Flathub na Loja de Aplicativos (Discover)
           flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo || true
 
-          # Substituir o símbolo do menu Iniciar do KDE pelo Símbolo Oficial do KerigmaOS
-          for icon_path in \
-              /usr/share/icons/breeze/places/22/start-here-kde.svg \
-              /usr/share/icons/breeze-dark/places/22/start-here-kde.svg \
-              /usr/share/icons/breeze/places/16/start-here-kde.svg \
-              /usr/share/icons/breeze-dark/places/16/start-here-kde.svg \
-              /usr/share/icons/breeze/places/64/start-here-kde.svg \
-              /usr/share/icons/breeze-dark/places/64/start-here-kde.svg; do
-              if [ -f "$icon_path" ]; then
-                  cp /usr/share/pixmaps/kerigma-logo.svg "$icon_path"
-              fi
-          done
+          # Aplicar branding KerigmaOS no Calamares e remover atalhos Debian
+          if [ -d /etc/calamares ]; then
+              sed -i 's|/etc/calamares/branding/debian|/etc/calamares/branding/kerigmaos|g' /etc/calamares/settings.conf || true
+              rm -f /usr/share/applications/install-debian.desktop /usr/share/applications/calamares.desktop || true
+              rm -f /etc/xdg/autostart/calamares-desktop-icon.desktop || true
+          fi
 
-          # Substituir Papel de Parede Padrão pelo do KerigmaOS
           mkdir -p /usr/share/wallpapers/Next/contents/images
           cp /usr/share/wallpapers/kerigma-wallpaper.svg /usr/share/wallpapers/Next/contents/images/1920x1080.svg
           cp /usr/share/wallpapers/kerigma-wallpaper.svg /usr/share/wallpapers/Next/contents/images/1024x768.svg
 
-          # Personalizar o Instalador Calamares com a marca KerigmaOS
-          if [ -d /etc/calamares/branding/debian ]; then
-              sed -i 's/Debian/KerigmaOS/g' /etc/calamares/branding/debian/branding.desc || true
-              cp /usr/share/pixmaps/kerigma-logo.svg /etc/calamares/branding/debian/debian-logo.png || true
-          fi
+          # Configurar layout do painel superior do macOS nativamente
+          cat << 'APPLYBAR' > /usr/local/bin/kerigma-apply-topbar
+          #!/usr/bin/env bash
+          kwriteconfig5 --file kded5rc --group Module-appmenu --key autoload true
+          kwriteconfig5 --file kwinrc --group org.kde.kdecoration2 --key ButtonsOnLeft "XIA"
+          kwriteconfig5 --file kwinrc --group org.kde.kdecoration2 --key ButtonsOnRight ""
+          qdbus-qt5 org.kde.kded5 /kded org.kde.kded5.loadModule appmenu 2>/dev/null || true
+          qdbus-qt5 org.kde.KWin /KWin reconfigure 2>/dev/null || true
+          JS_SCRIPT='
+          var allPanels = panels();
+          for (var i = 0; i < allPanels.length; i++) { allPanels[i].remove(); }
+          var topBar = new Panel("org.kde.panel");
+          topBar.location = "top";
+          topBar.height = 28;
+          var logoMenu = topBar.addWidget("org.kde.plasma.kickoff");
+          logoMenu.currentConfigGroup = ["General"];
+          logoMenu.writeConfig("icon", "/usr/share/pixmaps/kerigma-logo.svg");
+          topBar.addWidget("org.kerigma.windowtitle");
+          topBar.addWidget("org.kde.plasma.appmenu");
+          topBar.addWidget("org.kde.plasma.panelspacer");
+          topBar.addWidget("org.kde.plasma.systemtray");
+          var clock = topBar.addWidget("org.kde.plasma.digitalclock");
+          clock.currentConfigGroup = ["Appearance"];
+          clock.writeConfig("showDate", true);
+          '
+          qdbus-qt5 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript "\$JS_SCRIPT" 2>/dev/null || true
+          dconf write /net/launchpad/plank/docks/dock1/zoom-enabled true 2>/dev/null || true
+          dconf write /net/launchpad/plank/docks/dock1/icon-size 48 2>/dev/null || true
+          pkill plank 2>/dev/null || true
+          nohup plank >/dev/null 2>&1 &
+          APPLYBAR
+          chmod +x /usr/local/bin/kerigma-apply-topbar
 
-          # Instalar VSCodium
-          CODIUM_URL=$(curl -fsSL https://api.github.com/repos/VSCodium/vscodium/releases/latest | grep -oE 'https://[^"]+amd64\.deb' | head -n 1)
-          if [ -n "$CODIUM_URL" ]; then
-              wget -qO /tmp/codium.deb "$CODIUM_URL"
-              apt-get install -y --no-install-recommends /tmp/codium.deb
-              rm -f /tmp/codium.deb
-          fi
+          cat << 'AUTOSTARTBAR' > /etc/skel/.config/autostart/kerigma-layout.desktop
+          [Desktop Entry]
+          Type=Application
+          Name=Kerigma Layout
+          Exec=/usr/local/bin/kerigma-apply-topbar
+          Terminal=false
+          AUTOSTARTBAR
 
-          # Identidade oficial do KerigmaOS
           cat << 'OSRELEASE' > /etc/os-release
           PRETTY_NAME="KerigmaOS 1.0 Dev Edition"
           NAME="KerigmaOS"
@@ -294,29 +400,25 @@ jobs:
           HOME_URL="https://github.com/rafaelgrulke-sketch/KerigmaOS"
           OSRELEASE
 
-          # Firewall UFW e Serviços Essenciais
           ufw default deny incoming || true
           ufw default allow outgoing || true
           sed -i 's/ENABLED=no/ENABLED=yes/' /etc/ufw/ufw.conf
           systemctl enable ufw bluetooth NetworkManager cups
 
-          # Motor Ollama (IA Local)
           curl -fsSL https://ollama.com/install.sh | sh || true
 
-          # ZSH padrão
           cat << 'ZSHRC' > /etc/skel/.zshrc
           PROMPT='%F{cyan}%n@kerigma-os%f:%F{blue}%~%f$ '
           alias ll='ls -la --color=auto'
           ZSHRC
 
-          # Usuário Live
           useradd -m -s /usr/bin/zsh kerigma
           echo "kerigma:live" | chpasswd
           usermod -aG sudo,video,audio,docker,netdev,bluetooth,lpadmin,plugdev kerigma
           echo "kerigma ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/kerigma
+          chmod 0440 /etc/sudoers.d/kerigma
           chown -R kerigma:kerigma /home/kerigma
 
-          # Auto-login no SDDM
           mkdir -p /etc/sddm.conf.d
           echo -e "[Autologin]\nUser=kerigma\nSession=plasma" > /etc/sddm.conf.d/autologin.conf
 
@@ -340,7 +442,7 @@ jobs:
           sudo mksquashfs "$ROOTFS" "$ISO_DIR/live/filesystem.squashfs" -comp xz -e boot
           sudo rm -rf "$ROOTFS"
 
-          echo "=== 7. Configurando GRUB e gerando ISO ==="
+          echo "=== 7. Configurando GRUB unificado ==="
           sudo mkdir -p "$ISO_DIR/boot/grub"
           cat << 'GRUB_EOF' | sudo tee "$ISO_DIR/boot/grub/grub.cfg" > /dev/null
           insmod part_gpt
@@ -352,11 +454,7 @@ jobs:
           set menu_color_normal=white/black
           set menu_color_highlight=white/blue
 
-          menuentry "Iniciar KerigmaOS 1.0 (Instalar ou Experimentar)" {
-              linux /live/vmlinuz boot=live quiet splash locales=pt_BR.UTF-8 keyboard-layouts=br ---
-              initrd /live/initrd
-          }
-          menuentry "Instalador Direto KerigmaOS (Modo Calamares)" {
+          menuentry "KerigmaOS 1.0 — Instalar ou Experimentar" {
               linux /live/vmlinuz boot=live quiet splash calamares locales=pt_BR.UTF-8 keyboard-layouts=br ---
               initrd /live/initrd
           }
