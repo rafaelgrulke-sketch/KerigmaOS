@@ -314,7 +314,7 @@ jobs:
           apt-get install -y --no-install-recommends \
               ca-certificates curl gnupg wget sudo ufw nano \
               linux-image-amd64 live-boot live-boot-initramfs-tools systemd-sysv \
-              grub-pc grub-efi-amd64 grub-common xorriso squashfs-tools mtools \
+              grub-efi-amd64 grub-pc-bin grub-common xorriso squashfs-tools mtools \
               xorg xserver-xorg-video-all xserver-xorg-input-all mesa-utils libgl1-mesa-dri \
               plymouth plymouth-themes sddm \
               plasma-desktop plasma-workspace systemsettings kwin-x11 \
