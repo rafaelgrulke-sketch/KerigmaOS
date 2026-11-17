@@ -2,6 +2,30 @@
 set -e
 
 echo "=================================================="
+echo " Baixando atualizações de segurança e aplicativos..."
+echo "=================================================="
+
+# 1. Sincronizar repositórios contornando erros de relógio (caso ocorram)
+sudo apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Check-Date=false update
+
+# 2. Instalar atualizações do Debian silenciosamente (mantendo configs originais)
+sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y \
+    -o Dpkg::Options::="--force-confdef" \
+    -o Dpkg::Options::="--force-confold"
+
+# 3. Atualizar aplicativos de Loja (Flatpak) caso existam
+if command -v flatpak &> /dev/null; then
+    echo "Atualizando aplicativos Flatpak..."
+    sudo flatpak update -y
+fi
+
+# 4. Limpar ficheiros de instalação antigos para poupar disco
+sudo apt-get autoremove -y
+sudo apt-get clean
+
+
+
+echo "=================================================="
 echo "   Iniciando Atualização do KerigmaOS (v1.1)      "
 echo "=================================================="
 
