@@ -23,7 +23,7 @@ jobs:
       - name: Instalar Dependências de Construção no Anfitrião (LFS Cap. 2.2)
         run: |
           sudo apt-get update
-          sudo apt-get install -y debootstrap squashfs-tools xorriso grub-pc-bin grub-efi-amd64-bin mtools dosfstools
+          sudo apt-get install -y grub-efi-amd64 grub-efi-amd64-bin grub-efi-amd64-signed grub-pc-bin grub2-common shim-signed os-prober efibootmgr mtools dosfstools
 
       - name: Dar Permissão e Executar Build na pasta scripts/
         run: |
