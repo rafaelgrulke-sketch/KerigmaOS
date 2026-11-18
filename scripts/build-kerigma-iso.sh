@@ -32,7 +32,7 @@ sudo mount -vt sysfs sysfs "$CHROOT/sys"
 sudo mount -vt tmpfs tmpfs "$CHROOT/run"
 
 if [ -h "$CHROOT/dev/shm" ]; then
-    sudo mkdir -pv "$CHROOT/$(readlink $CHROOT/dev/shm)"
+    sudo mkdir -pv "$CHROOT/$(readlink$CHROOT/dev/shm)"
 else
     sudo mount -t tmpfs -o nosuid,nodev tmpfs "$CHROOT/dev/shm"
 fi
@@ -64,18 +64,18 @@ apt-get update
 
 # 3. Kernel, Live Boot e Firmwares Universais (All-In Hardware Support)
 apt-get install -y \
-    linux-image-amd64 linux-headers-amd64 live-boot systemd-sysv \
+    linux-image-amd64 linux-headers-amd64 live-boot systemd-sysv initramfs-tools \
     firmware-linux firmware-linux-free firmware-linux-nonfree \
     firmware-misc-nonfree firmware-realtek firmware-atheros \
     firmware-iwlwifi firmware-brcm80211 firmware-amd-graphics \
     intel-microcode amd64-microcode dkms build-essential git curl wget
 
-# 4. Utilitários de Sistema, Compressão e Particionamento (LFS Cap. 8 + Requisitos Calamares)
+# 4. Utilitários de Sistema, Compressão, GRUB Completo (UEFI + BIOS) e Calamares
 apt-get install -y \
     locales tzdata sudo bash-completion \
     rsync parted gparted dosfstools mtools e2fsprogs btrfs-progs xfsprogs ntfs-3g \
     squashfs-tools xorriso isolinux syslinux-common syslinux-efi \
-    grub-common grub2-common grub-pc-bin grub-efi-amd64-bin grub-efi-amd64-signed efibootmgr os-prober \
+    grub-common grub2-common grub-pc-bin grub-efi-amd64 grub-efi-amd64-bin grub-efi-amd64-signed shim-signed efibootmgr os-prober \
     calamares calamares-settings-debian
 
 # 5. Ambiente Gráfico KDE Plasma + Estilo macOS + Rede + Áudio + Impressoras + Apps
@@ -118,7 +118,7 @@ if ! lsmod | grep -q 8192eu; then
     git clone https://github.com/Mange/rtl8192eu-linux-driver.git /usr/src/rtl8192eu-1.0 || true
     if [ -d "/usr/src/rtl8192eu-1.0" ]; then
         dkms add -m rtl8192eu -v 1.0 || true
-        KERNEL_VER=$(ls /lib/modules | head -n 1)
+        KERNEL_VER=$(ls /lib/modules | sort -V | tail -n 1)
         dkms build -m rtl8192eu -v 1.0 -k "$KERNEL_VER" || true
         dkms install -m rtl8192eu -v 1.0 -k "$KERNEL_VER" || true
         echo "blacklist rtl8xxxu" > /etc/modprobe.d/blacklist-rtl8xxxu.conf
@@ -126,7 +126,6 @@ if ! lsmod | grep -q 8192eu; then
 fi
 
 # 9. SOLUÇÃO DO CONFLITO DE BARRAS (Desativa a barra padrão do Debian/KDE)
-# Garante que apenas a barra superior e o Dock do Kerigma OS sejam exibidos
 rm -rf /usr/share/plasma/layout-templates/org.kde.plasma.desktop.defaultPanel
 mkdir -p /usr/share/plasma/layout-templates/org.kde.plasma.desktop.defaultPanel/contents
 cat > /usr/share/plasma/layout-templates/org.kde.plasma.desktop.defaultPanel/contents/layout.js << "LAYOUT"
@@ -182,15 +181,21 @@ User=kerigma
 Session=plasma.desktop
 SDDM
 
+# Garante que os links /vmlinuz e /initrd.img existam na raiz e em /boot para o Calamares
+update-initramfs -u -k all || true
+
 # Limpeza de arquivos temporários (LFS Seção 7.13.1)
 apt-get clean
 rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 EOF
 
 echo "=== [5/8] Injetando Configurações do Calamares e Arquivos Kerigma ==="
-# Se você tiver seus arquivos do Kerigma (kerigma-welcome.py, etc.), ele copia daqui:
 if [ -d "$REPO_ROOT/custom-files" ]; then
     sudo cp -r "$REPO_ROOT/custom-files/"* "$CHROOT/"
+fi
+if [ -d "$REPO_ROOT/apps" ]; then
+    sudo mkdir -p "$CHROOT/opt/kerigma"
+    sudo cp -r "$REPO_ROOT/apps/"* "$CHROOT/opt/kerigma/" || true
 fi
 if [ -f "$REPO_ROOT/kerigma-welcome.py" ]; then
     sudo cp "$REPO_ROOT/kerigma-welcome.py" "$CHROOT/usr/local/bin/"
@@ -202,38 +207,10 @@ if [ -f "$REPO_ROOT/kerigma-welcome.desktop" ]; then
 fi
 
 # Garante que o diretório /boot/grub exista fisicamente dentro do sistema alvo
-sudo mkdir -p "$CHROOT/boot/grub"
+sudo mkdir -p "$CHROOT/boot/grub" "$CHROOT/boot/efi"
 
-# Executa o script 2 que está dentro da mesma pasta scripts/
+# Executa o script configure-calamares.sh que está dentro da pasta scripts/
 sudo bash "$SCRIPT_DIR/configure-calamares.sh" "$CHROOT"
 
 echo "=== [6/8] Desmontando Sistemas Virtuais com Segurança (LFS Seção 7.13.2) ==="
-sudo mountpoint -q "$CHROOT/dev/shm" && sudo umount "$CHROOT/dev/shm" || true
-sudo umount -lf "$CHROOT/dev/pts" || true
-sudo umount -lf "$CHROOT"/{sys,proc,run,dev} || true
-
-echo "=== [7/8] Gerando SquashFS e Copiando Kernel/Initrd ==="
-sudo mksquashfs "$CHROOT" "$ISODIR/live/filesystem.squashfs" -comp zstd -Xcompression-level 15 -e boot
-
-KERNEL_VERSION=$(ls "$CHROOT/boot" | grep "vmlinuz-" | sed 's/vmlinuz-//' | sort -V | tail -n 1)
-sudo cp "$CHROOT/boot/vmlinuz-$KERNEL_VERSION" "$ISODIR/live/vmlinuz"
-sudo cp "$CHROOT/boot/initrd.img-$KERNEL_VERSION" "$ISODIR/live/initrd"
-
-echo "=== [8/8] Criando Menu GRUB Híbrido (BIOS + UEFI) e Compilando ISO ==="
-cat << 'GRUBCFG' | sudo tee "$ISODIR/boot/grub/grub.cfg"
-set default="0"
-set timeout=5
-
-menuentry "Iniciar Kerigma OS (Live Mode)" {
-    linux /live/vmlinuz boot=live components quiet splash locales=pt_BR.UTF-8 keyboard-layouts=br
-    initrd /live/initrd
-}
-
-menuentry "Iniciar Kerigma OS (Modo Seguro / Compatibilidade)" {
-    linux /live/vmlinuz boot=live components nomodeset locales=pt_BR.UTF-8 keyboard-layouts=br
-    initrd /live/initrd
-}
-GRUBCFG
-
-sudo grub-mkrescue -o "$REPO_ROOT/KerigmaOS-Complete-amd64.iso" "$ISODIR"
-echo "=== CONCLUÍDO COM SUCESSO: $REPO_ROOT/KerigmaOS-Complete-amd64.iso ==="
+sudo
