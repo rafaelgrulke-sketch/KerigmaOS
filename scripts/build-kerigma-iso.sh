@@ -5,11 +5,14 @@
 # ==============================================================================
 set -e
 
-# Identifica automaticamente a pasta onde este script está (scripts/) e a raiz do projeto
+# Garante que o script está a correr como root
+if [ "$(id -u)" -ne 0 ]; then
+    exec sudo "$0" "$@"
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# Variáveis Globais (Padrão Capítulo 2.6 do LFS)
 export WORKDIR="$REPO_ROOT/kerigma_build"
 export CHROOT="$WORKDIR/chroot"
 export ISODIR="$WORKDIR/iso"
@@ -17,42 +20,40 @@ export DEBIAN_FRONTEND=noninteractive
 export LC_ALL=POSIX
 
 echo "=== [1/8] Limpando ambiente anterior e preparando diretórios ==="
-sudo rm -rf "$WORKDIR"
-mkdir -p "$CHROOT" "$ISODIR"/{live,boot/grub,EFI/boot}
+rm -rf "$WORKDIR"
+mkdir -p "$CHROOT" "$ISODIR/live" "$ISODIR/boot/grub" "$ISODIR/EFI/boot"
 
 echo "=== [2/8] Executando Debootstrap (Debian Bookworm Minimal) ==="
-sudo debootstrap --arch=amd64 --variant=minbase bookworm "$CHROOT" http://deb.debian.org/debian/
+debootstrap --arch=amd64 --variant=minbase bookworm "$CHROOT" http://deb.debian.org/debian/
 
 echo "=== [3/8] Montando Sistemas de Arquivos Virtuais do Kernel (LFS Cap. 7.3) ==="
-sudo mkdir -pv "$CHROOT"/{dev,dev/pts,proc,sys,run}
-sudo mount -v --bind /dev "$CHROOT/dev"
-sudo mount -v --bind /dev/pts "$CHROOT/dev/pts"
-sudo mount -vt proc proc "$CHROOT/proc"
-sudo mount -vt sysfs sysfs "$CHROOT/sys"
-sudo mount -vt tmpfs tmpfs "$CHROOT/run"
+mkdir -pv "$CHROOT/dev" "$CHROOT/dev/pts" "$CHROOT/proc" "$CHROOT/sys" "$CHROOT/run"
+mount -v --bind /dev "$CHROOT/dev"
+mount -v --bind /dev/pts "$CHROOT/dev/pts"
+mount -vt proc proc "$CHROOT/proc"
+mount -vt sysfs sysfs "$CHROOT/sys"
+mount -vt tmpfs tmpfs "$CHROOT/run"
 
 if [ -h "$CHROOT/dev/shm" ]; then
-    sudo mkdir -pv "$CHROOT/$(readlink$CHROOT/dev/shm)"
+    mkdir -pv "$CHROOT/$(readlink "$CHROOT/dev/shm")"
 else
-    sudo mount -t tmpfs -o nosuid,nodev tmpfs "$CHROOT/dev/shm"
+    mount -t tmpfs -o nosuid,nodev tmpfs "$CHROOT/dev/shm"
 fi
 
 echo "=== [4/8] Configurando o Sistema Base dentro do Chroot (LFS Cap. 7.5, 7.6 e 8) ==="
-cat << 'EOF' | sudo chroot "$CHROOT" /usr/bin/env -i HOME=/root TERM="$TERM" DEBIAN_FRONTEND=noninteractive PATH=/usr/bin:/usr/sbin:/bin:/sbin /bin/bash
+cat << 'EOF' | chroot "$CHROOT" /usr/bin/env -i HOME=/root TERM="$TERM" DEBIAN_FRONTEND=noninteractive PATH=/usr/bin:/usr/sbin:/bin:/sbin /bin/bash
 set -e
 
-# 1. Criação rigorosa da Hierarquia FHS (LFS Seção 7.5 - Previne erros do GRUB e Calamares)
-mkdir -pv /{boot,boot/grub,boot/efi,home,mnt,opt,srv}
-mkdir -pv /etc/{opt,sysconfig,calamares/modules,skel/Desktop,xdg/autostart}
-mkdir -pv /lib/firmware
-mkdir -pv /var/lib/hwclock
+# 1. Criação rigorosa da Hierarquia FHS
+mkdir -pv /boot /boot/grub /boot/efi /home /mnt /opt /srv
+mkdir -pv /etc/opt /etc/sysconfig /etc/calamares/modules /etc/skel/Desktop /etc/xdg/autostart
+mkdir -pv /lib/firmware /var/lib/hwclock
 install -dv -m 0750 /root
 install -dv -m 1777 /tmp /var/tmp
 
-# Link simbólico de sistemas montados (LFS Seção 7.6)
 ln -sfv /proc/self/mounts /etc/mtab
 
-# 2. Repositórios completos (Main, Contrib, Non-Free e Non-Free-Firmware)
+# 2. Repositórios completos
 cat > /etc/apt/sources.list << "SOURCES"
 deb http://deb.debian.org/debian/ bookworm main contrib non-free non-free-firmware
 deb-src http://deb.debian.org/debian/ bookworm main contrib non-free non-free-firmware
@@ -62,13 +63,13 @@ SOURCES
 
 apt-get update
 
-# 3. Kernel, Live Boot e Firmwares Universais (All-In Hardware Support)
+# 3. Kernel, Headers, bc (necessário para compilar driver Wi-Fi), Live Boot e Firmwares
 apt-get install -y \
     linux-image-amd64 linux-headers-amd64 live-boot systemd-sysv initramfs-tools \
     firmware-linux firmware-linux-free firmware-linux-nonfree \
     firmware-misc-nonfree firmware-realtek firmware-atheros \
     firmware-iwlwifi firmware-brcm80211 firmware-amd-graphics \
-    intel-microcode amd64-microcode dkms build-essential git curl wget
+    intel-microcode amd64-microcode dkms build-essential bc kmod cpio libssl-dev git curl wget
 
 # 4. Utilitários de Sistema, Compressão, GRUB Completo (UEFI + BIOS) e Calamares
 apt-get install -y \
@@ -87,14 +88,14 @@ apt-get install -y \
     cups system-config-printer ufw \
     python3 python3-pip python3-pyqt5 python3-requests kiwix-tools
 
-# 6. Configuração de Locales e Fuso Horário (LFS Seção 8.5)
+# 6. Configuração de Locales e Fuso Horário
 echo "pt_BR.UTF-8 UTF-8" > /etc/locale.gen
 echo "en_US.UTF-8 UTF-8" >> /etc/locale.gen
 locale-gen
 update-locale LANG=pt_BR.UTF-8 LC_ALL=pt_BR.UTF-8
 ln -sfv /usr/share/zoneinfo/America/Sao_Paulo /etc/localtime
 
-# 7. Configuração de Rede /etc/nsswitch.conf e /etc/hosts (LFS Seção 8.5.2.1)
+# 7. Configuração de Rede
 echo "kerigma-os" > /etc/hostname
 cat > /etc/hosts << "HOSTS"
 127.0.0.1   localhost kerigma-os
@@ -113,16 +114,18 @@ ethers: files
 rpc: files
 NSS
 
-# 8. Driver Realtek RTL8192EU (TP-Link TL-WN823N v2/v3 - ID 2357:0109) via DKMS
-if ! lsmod | grep -q 8192eu; then
-    git clone https://github.com/Mange/rtl8192eu-linux-driver.git /usr/src/rtl8192eu-1.0 || true
-    if [ -d "/usr/src/rtl8192eu-1.0" ]; then
-        dkms add -m rtl8192eu -v 1.0 || true
-        KERNEL_VER=$(ls /lib/modules | sort -V | tail -n 1)
-        dkms build -m rtl8192eu -v 1.0 -k "$KERNEL_VER" || true
-        dkms install -m rtl8192eu -v 1.0 -k "$KERNEL_VER" || true
-        echo "blacklist rtl8xxxu" > /etc/modprobe.d/blacklist-rtl8xxxu.conf
-    fi
+# 8. Driver Realtek RTL8192EU (TP-Link TL-WN823N v2/v3) via DKMS
+rm -rf /usr/src/rtl8192eu-1.0
+git clone https://github.com/clnhub/rtl8192eu-linux.git /usr/src/rtl8192eu-1.0 || git clone https://github.com/Mange/rtl8192eu-linux-driver.git /usr/src/rtl8192eu-1.0 || true
+if [ -d "/usr/src/rtl8192eu-1.0" ]; then
+    for kver in $(ls /lib/modules); do
+        if [ -d "/lib/modules/$kver/build" ]; then
+            dkms add -m rtl8192eu -v 1.0 || true
+            dkms build -m rtl8192eu -v 1.0 -k "$kver" || true
+            dkms install -m rtl8192eu -v 1.0 -k "$kver" || true
+        fi
+    done
+    echo "blacklist rtl8xxxu" > /etc/modprobe.d/blacklist-rtl8xxxu.conf
 fi
 
 # 9. SOLUÇÃO DO CONFLITO DE BARRAS (Desativa a barra padrão do Debian/KDE)
@@ -132,7 +135,6 @@ cat > /usr/share/plasma/layout-templates/org.kde.plasma.desktop.defaultPanel/con
 // Painel padrão do Debian/KDE removido para evitar conflito com a interface Kerigma OS
 LAYOUT
 
-# Configura o Plank (Dock estilo macOS) para iniciar automaticamente sem conflitos
 cat > /etc/xdg/autostart/plank.desktop << "PLANK_AUTO"
 [Desktop Entry]
 Type=Application
@@ -165,7 +167,7 @@ CALAMARES_DESK
 cp /usr/share/applications/calamares.desktop /etc/skel/Desktop/instalar-kerigma.desktop
 chmod +x /etc/skel/Desktop/instalar-kerigma.desktop
 
-# 11. Criação do Usuário Live Padrão (kerigma) com todos os grupos do LFS Cap. 7.6
+# 11. Criação do Utilizador Live Padrão (kerigma)
 if ! id "kerigma" &>/dev/null; then
     useradd -m -s /bin/bash -G sudo,audio,video,plugdev,netdev,bluetooth,lp,cdrom,dip kerigma
     echo "kerigma:kerigma" | chpasswd
@@ -173,7 +175,6 @@ if ! id "kerigma" &>/dev/null; then
     echo "kerigma ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/kerigma-live
 fi
 
-# Autologin no SDDM para a sessão Live entrar direto no Desktop
 mkdir -p /etc/sddm.conf.d
 cat > /etc/sddm.conf.d/autologin.conf << "SDDM"
 [Autologin]
@@ -181,36 +182,63 @@ User=kerigma
 Session=plasma.desktop
 SDDM
 
-# Garante que os links /vmlinuz e /initrd.img existam na raiz e em /boot para o Calamares
 update-initramfs -u -k all || true
 
-# Limpeza de arquivos temporários (LFS Seção 7.13.1)
 apt-get clean
 rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 EOF
 
 echo "=== [5/8] Injetando Configurações do Calamares e Arquivos Kerigma ==="
 if [ -d "$REPO_ROOT/custom-files" ]; then
-    sudo cp -r "$REPO_ROOT/custom-files/"* "$CHROOT/"
+    cp -r "$REPO_ROOT/custom-files/"* "$CHROOT/" || true
 fi
 if [ -d "$REPO_ROOT/apps" ]; then
-    sudo mkdir -p "$CHROOT/opt/kerigma"
-    sudo cp -r "$REPO_ROOT/apps/"* "$CHROOT/opt/kerigma/" || true
+    mkdir -p "$CHROOT/opt/kerigma"
+    cp -r "$REPO_ROOT/apps/"* "$CHROOT/opt/kerigma/" || true
 fi
 if [ -f "$REPO_ROOT/kerigma-welcome.py" ]; then
-    sudo cp "$REPO_ROOT/kerigma-welcome.py" "$CHROOT/usr/local/bin/"
-    sudo chmod +x "$CHROOT/usr/local/bin/kerigma-welcome.py"
+    cp "$REPO_ROOT/kerigma-welcome.py" "$CHROOT/usr/local/bin/"
+    chmod +x "$CHROOT/usr/local/bin/kerigma-welcome.py"
 fi
 if [ -f "$REPO_ROOT/kerigma-welcome.desktop" ]; then
-    sudo cp "$REPO_ROOT/kerigma-welcome.desktop" "$CHROOT/etc/xdg/autostart/"
-    sudo cp "$REPO_ROOT/kerigma-welcome.desktop" "$CHROOT/usr/share/applications/"
+    cp "$REPO_ROOT/kerigma-welcome.desktop" "$CHROOT/etc/xdg/autostart/"
+    cp "$REPO_ROOT/kerigma-welcome.desktop" "$CHROOT/usr/share/applications/"
 fi
 
-# Garante que o diretório /boot/grub exista fisicamente dentro do sistema alvo
-sudo mkdir -p "$CHROOT/boot/grub" "$CHROOT/boot/efi"
+mkdir -p "$CHROOT/boot/grub" "$CHROOT/boot/efi"
 
-# Executa o script configure-calamares.sh que está dentro da pasta scripts/
-sudo bash "$SCRIPT_DIR/configure-calamares.sh" "$CHROOT"
+bash "$SCRIPT_DIR/configure-calamares.sh" "$CHROOT"
 
 echo "=== [6/8] Desmontando Sistemas Virtuais com Segurança (LFS Seção 7.13.2) ==="
-sudo
+umount -lf "$CHROOT/dev/shm" 2>/dev/null || true
+umount -lf "$CHROOT/dev/pts" 2>/dev/null || true
+umount -lf "$CHROOT/sys" 2>/dev/null || true
+umount -lf "$CHROOT/proc" 2>/dev/null || true
+umount -lf "$CHROOT/run" 2>/dev/null || true
+umount -lf "$CHROOT/dev" 2>/dev/null || true
+
+echo "=== [7/8] Gerando SquashFS (COM /boot INCLUSO) e Copiando Kernel/Initrd ==="
+mksquashfs "$CHROOT" "$ISODIR/live/filesystem.squashfs" -comp zstd -Xcompression-level 15
+
+KERNEL_VERSION=$(ls "$CHROOT/boot" | grep "vmlinuz-" | sed 's/vmlinuz-//' | sort -V | tail -n 1)
+cp "$CHROOT/boot/vmlinuz-$KERNEL_VERSION" "$ISODIR/live/vmlinuz"
+cp "$CHROOT/boot/initrd.img-$KERNEL_VERSION" "$ISODIR/live/initrd"
+
+echo "=== [8/8] Criando Menu GRUB Híbrido (BIOS + UEFI) e Compilando ISO ==="
+cat << 'GRUBCFG' > "$ISODIR/boot/grub/grub.cfg"
+set default="0"
+set timeout=5
+
+menuentry "Iniciar Kerigma OS (Live Mode)" {
+    linux /live/vmlinuz boot=live components quiet splash locales=pt_BR.UTF-8 keyboard-layouts=br
+    initrd /live/initrd
+}
+
+menuentry "Iniciar Kerigma OS (Modo Seguro / Compatibilidade)" {
+    linux /live/vmlinuz boot=live components nomodeset locales=pt_BR.UTF-8 keyboard-layouts=br
+    initrd /live/initrd
+}
+GRUBCFG
+
+grub-mkrescue -o "$REPO_ROOT/KerigmaOS-Complete-amd64.iso" "$ISODIR"
+echo "=== CONCLUÍDO COM SUCESSO: $REPO_ROOT/KerigmaOS-Complete-amd64.iso ==="
