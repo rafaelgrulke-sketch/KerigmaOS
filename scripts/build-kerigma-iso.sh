@@ -38,7 +38,7 @@ else
 fi
 
 echo "=== [4/8] Configurando o Sistema Base dentro do Chroot (LFS Cap. 7.5, 7.6 e 8) ==="
-cat << 'EOF' | sudo chroot "$CHROOT" /usr/bin/env -i HOME=/root TERM="$TERM" PATH=/usr/bin:/usr/sbin:/bin:/sbin /bin/bash
+cat << 'EOF' | sudo chroot "$CHROOT" /usr/bin/env -i HOME=/root TERM="$TERM" DEBIAN_FRONTEND=noninteractive PATH=/usr/bin:/usr/sbin:/bin:/sbin /bin/bash
 set -e
 
 # 1. Criação rigorosa da Hierarquia FHS (LFS Seção 7.5 - Previne erros do GRUB e Calamares)
@@ -82,7 +82,7 @@ apt-get install -y \
 apt-get install -y \
     plasma-desktop plasma-nm plasma-pa bluedevil powerdevil sddm \
     kde-config-gtk-style breeze-gtk-theme plank \
-    konsole dolphin ark spectacle gwenview okular kate vlc \
+    konsole dolphin ark kde-spectacle gwenview okular kate vlc \
     network-manager bluez pipewire pipewire-audio pipewire-pulse wireplumber \
     cups system-config-printer ufw \
     python3 python3-pip python3-pyqt5 python3-requests kiwix-tools
