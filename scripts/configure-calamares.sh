@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==============================================================================
-# CONFIGURAÇÃO BLINDADA DO CALAMARES - KERIGMA OS
+# CONFIGURAÇÃO COMPLETA E BLINDADA DO CALAMARES - KERIGMA OS
 # Localização: scripts/configure-calamares.sh
 # ==============================================================================
 set -e
@@ -17,9 +17,64 @@ SBIN_DIR="$CHROOT_PATH/usr/local/sbin"
 
 mkdir -p "$ETC_CAL/modules" "$USR_CAL/modules" "$SBIN_DIR"
 
-# Limpa qualquer resquício de configuração padrão do Debian
+# Limpa configurações antigas para evitar conflitos
 rm -f "$ETC_CAL/settings.conf" "$USR_CAL/settings.conf"
 rm -f "$ETC_CAL/modules/"*.conf
+
+# ------------------------------------------------------------------------------
+# BRANDING PRÓPRIO DO KERIGMA OS
+# ------------------------------------------------------------------------------
+mkdir -p "$ETC_CAL/branding/kerigma"
+if [ -d "$USR_CAL/branding/default" ]; then
+    cp -rf "$USR_CAL/branding/default/"* "$ETC_CAL/branding/kerigma/"
+    sed -i 's/componentName:.*/componentName: kerigma/' "$ETC_CAL/branding/kerigma/branding.desc"
+    sed -i 's/productName:.*/productName: Kerigma OS/' "$ETC_CAL/branding/kerigma/branding.desc"
+    sed -i 's/shortProductName:.*/shortProductName: Kerigma/' "$ETC_CAL/branding/kerigma/branding.desc"
+    sed -i 's/bootloaderEntryName:.*/bootloaderEntryName: KerigmaOS/' "$ETC_CAL/branding/kerigma/branding.desc"
+else
+    cat > "$ETC_CAL/branding/kerigma/branding.desc" << 'EOF'
+componentName: kerigma
+welcomeStyleCalamares: true
+welcomeExpandingLogo: true
+windowExpanding: normal
+windowSize: 800px,520px
+windowPlacement: center
+sidebar: widget
+navigation: widget
+strings:
+    productName: Kerigma OS
+    shortProductName: Kerigma
+    version: 1.0
+    shortVersion: 1.0
+    versionedName: Kerigma OS 1.0
+    shortVersionedName: Kerigma 1.0
+    bootloaderEntryName: KerigmaOS
+    productUrl: https://github.com/
+    supportUrl: https://github.com/
+slideshow: "show.qml"
+style:
+    sidebarBackground: "#1e1e2e"
+    sidebarText: "#cdd6f4"
+    sidebarTextSelect: "#ffffff"
+    sidebarTextHighlight: "#f38ba8"
+EOF
+    cat > "$ETC_CAL/branding/kerigma/show.qml" << 'EOF'
+import QtQuick 2.0
+import calamares.slideshow 1.0
+
+Presentation {
+    id: presentation
+    Slide {
+        anchors.fill: parent
+        Text {
+            anchors.centerIn: parent
+            text: "Instalando o Kerigma OS..."
+            font.pixelSize: 28
+        }
+    }
+}
+EOF
+fi
 
 # ------------------------------------------------------------------------------
 # SCRIPTS AUXILIARES (executados pelo Calamares dentro do sistema instalado)
@@ -47,15 +102,14 @@ exit 0
 EOF
 chmod +x "$SBIN_DIR/kerigma-calamares-pre.sh"
 
-# Pós-bootloader (garante GRUB funcional em UEFI Acer/genérico e BIOS Legacy)
+# Pós-bootloader (limpa Live e blinda GRUB em UEFI Acer/genérico e BIOS Legacy)
 cat > "$SBIN_DIR/kerigma-calamares-post.sh" << 'EOF'
 #!/bin/bash
 set -e
 
-# Remove pacotes Live sem jamais abortar a instalação caso algum não exista
+# Remove apenas pacotes exclusivos da sessão Live (sem autoremove agressivo)
 DEBIAN_FRONTEND=noninteractive apt-get purge -y live-boot live-boot-initramfs-tools calamares 2>/dev/null || true
-DEBIAN_FRONTEND=noninteractive apt-get autoremove -y 2>/dev/null || true
-rm -f /home/*/Desktop/instalar-kerigma.desktop
+rm -f /home/*/Desktop/instalar-kerigma.desktop /usr/share/applications/calamares.desktop
 
 # Garante symlinks do Kernel atualizados
 KVER=$(ls /boot 2>/dev/null | grep "^vmlinuz-" | sed 's/^vmlinuz-//' | sort -V | tail -n 1)
@@ -89,18 +143,40 @@ EOF
 chmod +x "$SBIN_DIR/kerigma-calamares-post.sh"
 
 # ------------------------------------------------------------------------------
-# MÓDULOS DO CALAMARES
+# MÓDULOS DO CALAMARES (100% autocontidos)
 # ------------------------------------------------------------------------------
 
-# 1. UnpackFS: aponta exatamente para a imagem SquashFS do live-boot
-cat > "$ETC_CAL/modules/unpackfs.conf" << 'EOF'
-unpack:
-  - source: "/run/live/medium/live/filesystem.squashfs"
-    sourcefs: "squashfs"
-    destination: ""
+# 1. Welcome
+cat > "$ETC_CAL/modules/welcome.conf" << 'EOF'
+showSupportUrl: false
+showKnownIssuesUrl: false
+showReleaseNotesUrl: false
+requirements:
+  requiredStorage: 8.0
+  requiredRam: 1.0
+  check:
+    - storage
+    - ram
+    - root
+  required:
+    - storage
+    - root
 EOF
 
-# 2. Particionamento: Apagar disco (EFI 512M + Swap + Ext4)
+# 2. Locale e Teclado
+cat > "$ETC_CAL/modules/locale.conf" << 'EOF'
+region: "America"
+zone: "Sao_Paulo"
+localeGenPath: "/etc/locale.gen"
+EOF
+
+cat > "$ETC_CAL/modules/keyboard.conf" << 'EOF'
+xOrgConfFileName: "/etc/X11/xorg.conf.d/00-keyboard.conf"
+convertedKeymapPath: "/lib/kbd/keymaps/xkb"
+writeEtcDefaultKeyboard: true
+EOF
+
+# 3. Particionamento: Apagar disco (EFI 512M + Swap + Ext4)
 cat > "$ETC_CAL/modules/partition.conf" << 'EOF'
 efiSystemPartition: "/boot/efi"
 efiSystemPartitionSize: 512M
@@ -117,7 +193,60 @@ availableFileSystemTypes: ["ext4", "btrfs", "xfs"]
 enableLuksAutomatedPartitioning: true
 EOF
 
-# 3. Usuários: garante grupo sudo e permite senhas simples
+# 4. Mount: Garante bind-mounts virtuais e efivarfs dentro do SSD alvo
+cat > "$ETC_CAL/modules/mount.conf" << 'EOF'
+extraMounts:
+  - device: proc
+    fs: proc
+    mountPoint: /proc
+  - device: sys
+    fs: sysfs
+    mountPoint: /sys
+  - device: /dev
+    mountPoint: /dev
+    options: bind
+  - device: tmpfs
+    fs: tmpfs
+    mountPoint: /run
+  - device: /run/udev
+    mountPoint: /run/udev
+    options: bind
+extraMountsEfi:
+  - device: efivarfs
+    fs: efivarfs
+    mountPoint: /sys/firmware/efi/efivars
+mountOptions:
+  - filesystem: default
+    options: [ defaults, noatime ]
+  - filesystem: efi
+    options: [ defaults, umask=0077 ]
+EOF
+
+# 5. UnpackFS: Aponta exatamente para a imagem SquashFS do live-boot
+cat > "$ETC_CAL/modules/unpackfs.conf" << 'EOF'
+unpack:
+  - source: "/run/live/medium/live/filesystem.squashfs"
+    sourcefs: "squashfs"
+    destination: ""
+EOF
+
+# 6. MachineID e Fstab
+cat > "$ETC_CAL/modules/machineid.conf" << 'EOF'
+systemd: true
+dbus: true
+dbus-symlink: true
+EOF
+
+cat > "$ETC_CAL/modules/fstab.conf" << 'EOF'
+mountOptions:
+  default: defaults,noatime
+  btrfs: defaults,noatime,space_cache=v2
+ssdExtraMountOptions:
+  ext4: discard
+efiMountOptions: umask=0077
+EOF
+
+# 7. Usuários
 cat > "$ETC_CAL/modules/users.conf" << 'EOF'
 defaultGroups:
   - sudo
@@ -139,7 +268,7 @@ allowWeakPasswordsDefault: true
 userShell: /bin/bash
 EOF
 
-# 4. Display Manager (SDDM + KDE Plasma)
+# 8. Display Manager (SDDM + KDE Plasma)
 cat > "$ETC_CAL/modules/displaymanager.conf" << 'EOF'
 displaymanagers:
   - sddm
@@ -150,7 +279,7 @@ basicSetup: false
 sysconfigSetup: false
 EOF
 
-# 5. Serviços Systemd
+# 9. Serviços Systemd
 cat > "$ETC_CAL/modules/services-systemd.conf" << 'EOF'
 units:
   - name: "NetworkManager"
@@ -161,7 +290,11 @@ units:
     mandatory: false
 EOF
 
-# 6. GrubCfg (/etc/default/grub)
+# 10. Initramfs, GrubCfg e Bootloader
+cat > "$ETC_CAL/modules/initramfs.conf" << 'EOF'
+kernel: all
+EOF
+
 cat > "$ETC_CAL/modules/grubcfg.conf" << 'EOF'
 overwrite: true
 prefer_grub_d: false
@@ -177,7 +310,6 @@ defaults:
   GRUB_DISTRIBUTOR: "KerigmaOS"
 EOF
 
-# 7. Bootloader GRUB
 cat > "$ETC_CAL/modules/bootloader.conf" << 'EOF'
 efiBootLoader: "grub"
 kernel: "/vmlinuz"
@@ -194,7 +326,20 @@ efiBootMgr: "efibootmgr"
 installEFIFallback: true
 EOF
 
-# 8. Shellprocess Pré e Pós
+# 11. Umount e Finished
+cat > "$ETC_CAL/modules/umount.conf" << 'EOF'
+srcLog: "/root/.cache/calamares/session.log"
+destLog: "/var/log/Calamares.log"
+EOF
+
+cat > "$ETC_CAL/modules/finished.conf" << 'EOF'
+restartNowEnabled: true
+restartNowChecked: false
+restartNowCommand: "systemctl -i reboot"
+notifyOnFinished: true
+EOF
+
+# 12. Shellprocess Pré e Pós
 cat > "$ETC_CAL/modules/shellprocess-pre.conf" << 'EOF'
 i18n:
   name: "Preparando sistema instalado do Kerigma OS..."
@@ -213,9 +358,9 @@ script:
   - "/usr/local/sbin/kerigma-calamares-post.sh"
 EOF
 
-# 9. Settings Principal do Calamares (sem módulo 'packages')
+# 13. Settings Principal do Calamares
 cat > "$ETC_CAL/settings.conf" << 'EOF'
-modules-search: [ local, /usr/lib/calamares/modules ]
+modules-search: [ local ]
 
 instances:
   - id: pre
@@ -257,7 +402,7 @@ sequence:
   - show:
       - finished
 
-branding: default
+branding: kerigma
 prompt-install: true
 dont-chroot: false
 oem-setup: false
@@ -267,5 +412,5 @@ hide-back-and-next-during-exec: false
 quit-at-end: false
 EOF
 
-# Espelha para /usr/share/calamares para impedir qualquer fallback
+# Espelha tudo para /usr/share/calamares para impedir qualquer fallback
 cp -rf "$ETC_CAL/"* "$USR_CAL/"
