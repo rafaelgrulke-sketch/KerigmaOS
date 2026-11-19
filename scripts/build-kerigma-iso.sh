@@ -124,15 +124,15 @@ ethers: files
 rpc: files
 NSS
 
-# Driver Realtek RTL8192EU (TP-Link TL-WN823N) via DKMS com limpeza em caso de falha
+# Driver Realtek RTL8192EU (TP-Link TL-WN823N) via DKMS com fallback limpo para rtl8xxxu
 rm -rf /usr/src/rtl8192eu-1.0
-if git clone --depth 1 https://github.com/clnhub/rtl8192eu-linux.git /usr/src/rtl8192eu-1.0; then
+if git clone --depth 1 https://github.com/Mange/rtl8192eu-linux-driver.git /usr/src/rtl8192eu-1.0; then
     KVER=$(ls /lib/modules | sort -V | tail -n 1)
     if [ -d "/lib/modules/$KVER/build" ]; then
         if dkms add -m rtl8192eu -v 1.0 && dkms build -m rtl8192eu -v 1.0 -k "$KVER" && dkms install -m rtl8192eu -v 1.0 -k "$KVER"; then
             echo "blacklist rtl8xxxu" > /etc/modprobe.d/blacklist-rtl8xxxu.conf
         else
-            echo "Aviso: DKMS rtl8192eu falhou para $KVER; limpando módulo para não quebrar o initramfs."
+            echo "Aviso: DKMS rtl8192eu incompatível com $KVER; mantendo driver nativo rtl8xxxu do kernel."
             dkms remove -m rtl8192eu -v 1.0 --all 2>/dev/null || true
             rm -rf /usr/src/rtl8192eu-1.0
         fi
@@ -230,15 +230,22 @@ chroot "$CHROOT" bash -n /usr/local/sbin/kerigma-calamares-post.sh
 chroot "$CHROOT" python3 - << 'PYTEST'
 import yaml, glob, os
 
-# 1. Valida sintaxe YAML de todos os arquivos do Calamares
-conf_files = glob.glob("/etc/calamares/modules/*.conf") + ["/etc/calamares/settings.conf"]
-assert len(conf_files) >= 9, f"Poucos arquivos de configuração encontrados: {conf_files}"
+# 1. Valida sintaxe YAML de todos os arquivos do Calamares e do branding
+conf_files = (
+    glob.glob("/etc/calamares/modules/*.conf")
+    + ["/etc/calamares/settings.conf", "/etc/calamares/branding/kerigma/branding.desc"]
+)
 for path in conf_files:
+    assert os.path.exists(path), f"Arquivo obrigatório ausente: {path}"
     with open(path, "r") as f:
         data = yaml.safe_load(f)
     assert isinstance(data, dict) and len(data) > 0, f"YAML inválido ou vazio: {path}"
 
-# 2. Valida sequência do settings.conf e existência de cada módulo instalado
+# 2. Valida sequência do settings.conf e existência de cada módulo (multiarch Debian + padrão)
+mod_roots = [
+    "/usr/lib/x86_64-linux-gnu/calamares/modules",
+    "/usr/lib/calamares/modules",
+]
 with open("/etc/calamares/settings.conf") as f:
     s = yaml.safe_load(f)
 
@@ -248,19 +255,26 @@ for block in s["sequence"]:
         if phase in block:
             for item in block[phase]:
                 mod_name = item.split("@")[0]
-                mod_dir = f"/usr/lib/calamares/modules/{mod_name}"
-                assert os.path.isdir(mod_dir), f"Módulo do Calamares ausente: {mod_dir}"
+                found = any(os.path.isdir(os.path.join(root, mod_name)) for root in mod_roots)
+                assert found, f"Módulo do Calamares ausente em {mod_roots}: {mod_name}"
             if phase == "exec":
                 exec_steps = block[phase]
 
 assert "packages" not in exec_steps, "ERRO: módulo packages não pode estar ativo!"
-assert "unpackfs" in exec_steps and "grubcfg" in exec_steps and "bootloader" in exec_steps
+assert "mount" in exec_steps and "unpackfs" in exec_steps and "grubcfg" in exec_steps and "bootloader" in exec_steps
 assert exec_steps.index("shellprocess@pre") < exec_steps.index("users"), "shellprocess@pre deve rodar antes de users!"
 assert exec_steps.index("bootloader") < exec_steps.index("shellprocess@post"), "shellprocess@post deve rodar após bootloader!"
 
-# 3. Garante Kernel, Initrd, SquashFS tools e binários do GRUB
-assert os.path.exists("/vmlinuz") and os.path.exists("/initrd.img"), "Symlinks /vmlinuz ou /initrd.img ausentes!"
-for bin_path in [
+# 3. Garante arquivos críticos de módulos, Kernel, Initrd e binários do GRUB
+required_paths = [
+    "/etc/calamares/modules/mount.conf",
+    "/etc/calamares/modules/unpackfs.conf",
+    "/etc/calamares/modules/fstab.conf",
+    "/etc/calamares/modules/partition.conf",
+    "/etc/calamares/modules/grubcfg.conf",
+    "/etc/calamares/modules/bootloader.conf",
+    "/vmlinuz",
+    "/initrd.img",
     "/usr/sbin/grub-install",
     "/usr/sbin/grub-mkconfig",
     "/usr/sbin/update-grub",
@@ -269,8 +283,9 @@ for bin_path in [
     "/usr/bin/rsync",
     "/usr/local/sbin/kerigma-calamares-pre.sh",
     "/usr/local/sbin/kerigma-calamares-post.sh",
-]:
-    assert os.path.exists(bin_path), f"Binário/script ausente: {bin_path}"
+]
+for p in required_paths:
+    assert os.path.exists(p), f"Recurso obrigatório ausente: {p}"
 
 print("AUTO-TESTE RIGOROSO APROVADO COM 100% DE SUCESSO!")
 PYTEST
