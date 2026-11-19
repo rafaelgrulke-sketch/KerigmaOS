@@ -1,11 +1,10 @@
 #!/bin/bash
 # ==============================================================================
-# KERIGMA OS - BUILD SCRIPT DEFINITIVO (ALL-IN EDITION)
+# KERIGMA OS - BUILD SCRIPT DEFINITIVO COM AUTO-TESTE COMPLETO
 # Localização: scripts/build-kerigma-iso.sh
 # ==============================================================================
 set -e
 
-# Garante que o script está a correr como root
 if [ "$(id -u)" -ne 0 ]; then
     exec sudo "$0" "$@"
 fi
@@ -19,14 +18,24 @@ export ISODIR="$WORKDIR/iso"
 export DEBIAN_FRONTEND=noninteractive
 export LC_ALL=POSIX
 
-echo "=== [1/8] Limpando ambiente anterior e preparando diretórios ==="
+cleanup_mounts() {
+    umount -lf "$CHROOT/dev/shm" 2>/dev/null || true
+    umount -lf "$CHROOT/dev/pts" 2>/dev/null || true
+    umount -lf "$CHROOT/sys" 2>/dev/null || true
+    umount -lf "$CHROOT/proc" 2>/dev/null || true
+    umount -lf "$CHROOT/run" 2>/dev/null || true
+    umount -lf "$CHROOT/dev" 2>/dev/null || true
+}
+trap cleanup_mounts EXIT
+
+echo "=== [1/9] Limpando ambiente anterior e preparando diretórios ==="
 rm -rf "$WORKDIR"
 mkdir -p "$CHROOT" "$ISODIR/live" "$ISODIR/boot/grub" "$ISODIR/EFI/boot"
 
-echo "=== [2/8] Executando Debootstrap (Debian Bookworm Minimal) ==="
+echo "=== [2/9] Executando Debootstrap (Debian Bookworm Minimal) ==="
 debootstrap --arch=amd64 --variant=minbase bookworm "$CHROOT" http://deb.debian.org/debian/
 
-echo "=== [3/8] Montando Sistemas de Arquivos Virtuais do Kernel (LFS Cap. 7.3) ==="
+echo "=== [3/9] Montando Sistemas de Arquivos Virtuais do Kernel ==="
 mkdir -pv "$CHROOT/dev" "$CHROOT/dev/pts" "$CHROOT/proc" "$CHROOT/sys" "$CHROOT/run"
 mount -v --bind /dev "$CHROOT/dev"
 mount -v --bind /dev/pts "$CHROOT/dev/pts"
@@ -40,11 +49,10 @@ else
     mount -t tmpfs -o nosuid,nodev tmpfs "$CHROOT/dev/shm"
 fi
 
-echo "=== [4/8] Configurando o Sistema Base dentro do Chroot (LFS Cap. 7.5, 7.6 e 8) ==="
+echo "=== [4/9] Configurando o Sistema Base dentro do Chroot ==="
 cat << 'EOF' | chroot "$CHROOT" /usr/bin/env -i HOME=/root TERM="$TERM" DEBIAN_FRONTEND=noninteractive PATH=/usr/bin:/usr/sbin:/bin:/sbin /bin/bash
 set -e
 
-# 1. Criação rigorosa da Hierarquia FHS
 mkdir -pv /boot /boot/grub /boot/efi /home /mnt /opt /srv
 mkdir -pv /etc/opt /etc/sysconfig /etc/calamares/modules /etc/skel/Desktop /etc/xdg/autostart
 mkdir -pv /lib/firmware /var/lib/hwclock
@@ -53,7 +61,6 @@ install -dv -m 1777 /tmp /var/tmp
 
 ln -sfv /proc/self/mounts /etc/mtab
 
-# 2. Repositórios completos
 cat > /etc/apt/sources.list << "SOURCES"
 deb http://deb.debian.org/debian/ bookworm main contrib non-free non-free-firmware
 deb-src http://deb.debian.org/debian/ bookworm main contrib non-free non-free-firmware
@@ -63,7 +70,7 @@ SOURCES
 
 apt-get update
 
-# 3. Kernel, Headers, bc (necessário para compilar driver Wi-Fi), Live Boot e Firmwares
+# Kernel, Headers, Live Boot e Firmwares
 apt-get install -y \
     linux-image-amd64 linux-headers-amd64 live-boot systemd-sysv initramfs-tools \
     firmware-linux firmware-linux-free firmware-linux-nonfree \
@@ -71,31 +78,34 @@ apt-get install -y \
     firmware-iwlwifi firmware-brcm80211 firmware-amd-graphics \
     intel-microcode amd64-microcode dkms build-essential bc kmod cpio libssl-dev git curl wget
 
-# 4. Utilitários de Sistema, Compressão, GRUB Completo (UEFI + BIOS) e Calamares
+# Utilitários, Teclado, GRUB Completo (UEFI + BIOS) e Calamares (SEM calamares-settings-debian)
 apt-get install -y \
-    locales tzdata sudo bash-completion \
+    locales tzdata console-setup keyboard-configuration sudo bash-completion \
     rsync parted gparted dosfstools mtools e2fsprogs btrfs-progs xfsprogs ntfs-3g \
     squashfs-tools xorriso isolinux syslinux-common syslinux-efi \
     grub-common grub2-common grub-pc-bin grub-efi-amd64 grub-efi-amd64-bin grub-efi-amd64-signed shim-signed efibootmgr os-prober \
-    calamares calamares-settings-debian
+    calamares
 
-# 5. Ambiente Gráfico KDE Plasma + Estilo macOS + Rede + Áudio + Impressoras + Apps
+# Garante remoção do pacote problemático caso tenha entrado como recomendação
+apt-get purge -y calamares-settings-debian 2>/dev/null || true
+
+# KDE Plasma + Estilo macOS + Rede + Áudio + Apps + Python YAML
 apt-get install -y \
     plasma-desktop plasma-nm plasma-pa bluedevil powerdevil sddm \
     kde-config-gtk-style breeze-gtk-theme plank \
     konsole dolphin ark kde-spectacle gwenview okular kate vlc \
     network-manager bluez pipewire pipewire-audio pipewire-pulse wireplumber \
     cups system-config-printer ufw \
-    python3 python3-pip python3-pyqt5 python3-requests kiwix-tools
+    python3 python3-pip python3-pyqt5 python3-requests python3-yaml kiwix-tools
 
-# 6. Configuração de Locales e Fuso Horário
+# Locales e Fuso Horário
 echo "pt_BR.UTF-8 UTF-8" > /etc/locale.gen
 echo "en_US.UTF-8 UTF-8" >> /etc/locale.gen
 locale-gen
 update-locale LANG=pt_BR.UTF-8 LC_ALL=pt_BR.UTF-8
 ln -sfv /usr/share/zoneinfo/America/Sao_Paulo /etc/localtime
 
-# 7. Configuração de Rede
+# Rede
 echo "kerigma-os" > /etc/hostname
 cat > /etc/hosts << "HOSTS"
 127.0.0.1   localhost kerigma-os
@@ -114,25 +124,26 @@ ethers: files
 rpc: files
 NSS
 
-# 8. Driver Realtek RTL8192EU (TP-Link TL-WN823N v2/v3) via DKMS
+# Driver Realtek RTL8192EU (TP-Link TL-WN823N) via DKMS com limpeza em caso de falha
 rm -rf /usr/src/rtl8192eu-1.0
-git clone https://github.com/clnhub/rtl8192eu-linux.git /usr/src/rtl8192eu-1.0 || git clone https://github.com/Mange/rtl8192eu-linux-driver.git /usr/src/rtl8192eu-1.0 || true
-if [ -d "/usr/src/rtl8192eu-1.0" ]; then
-    for kver in $(ls /lib/modules); do
-        if [ -d "/lib/modules/$kver/build" ]; then
-            dkms add -m rtl8192eu -v 1.0 || true
-            dkms build -m rtl8192eu -v 1.0 -k "$kver" || true
-            dkms install -m rtl8192eu -v 1.0 -k "$kver" || true
+if git clone --depth 1 https://github.com/clnhub/rtl8192eu-linux.git /usr/src/rtl8192eu-1.0; then
+    KVER=$(ls /lib/modules | sort -V | tail -n 1)
+    if [ -d "/lib/modules/$KVER/build" ]; then
+        if dkms add -m rtl8192eu -v 1.0 && dkms build -m rtl8192eu -v 1.0 -k "$KVER" && dkms install -m rtl8192eu -v 1.0 -k "$KVER"; then
+            echo "blacklist rtl8xxxu" > /etc/modprobe.d/blacklist-rtl8xxxu.conf
+        else
+            echo "Aviso: DKMS rtl8192eu falhou para $KVER; limpando módulo para não quebrar o initramfs."
+            dkms remove -m rtl8192eu -v 1.0 --all 2>/dev/null || true
+            rm -rf /usr/src/rtl8192eu-1.0
         fi
-    done
-    echo "blacklist rtl8xxxu" > /etc/modprobe.d/blacklist-rtl8xxxu.conf
+    fi
 fi
 
-# 9. SOLUÇÃO DO CONFLITO DE BARRAS (Desativa a barra padrão do Debian/KDE)
+# Remove barra padrão duplicada do Debian/KDE e ativa o Dock Plank
 rm -rf /usr/share/plasma/layout-templates/org.kde.plasma.desktop.defaultPanel
 mkdir -p /usr/share/plasma/layout-templates/org.kde.plasma.desktop.defaultPanel/contents
 cat > /usr/share/plasma/layout-templates/org.kde.plasma.desktop.defaultPanel/contents/layout.js << "LAYOUT"
-// Painel padrão do Debian/KDE removido para evitar conflito com a interface Kerigma OS
+// Painel padrão removido para manter apenas a barra e o Dock do Kerigma OS
 LAYOUT
 
 cat > /etc/xdg/autostart/plank.desktop << "PLANK_AUTO"
@@ -146,7 +157,7 @@ NoDisplay=true
 X-GNOME-Autostart-enabled=true
 PLANK_AUTO
 
-# 10. SOLUÇÃO DOS ÍCONES DUPLICADOS DE INSTALAÇÃO
+# Ícone único de instalação no Desktop
 rm -f /usr/share/applications/install-debian.desktop
 rm -f /etc/skel/Desktop/install-debian.desktop
 
@@ -167,7 +178,7 @@ CALAMARES_DESK
 cp /usr/share/applications/calamares.desktop /etc/skel/Desktop/instalar-kerigma.desktop
 chmod +x /etc/skel/Desktop/instalar-kerigma.desktop
 
-# 11. Criação do Utilizador Live Padrão (kerigma)
+# Usuário Live padrão
 if ! id "kerigma" &>/dev/null; then
     useradd -m -s /bin/bash -G sudo,audio,video,plugdev,netdev,bluetooth,lp,cdrom,dip kerigma
     echo "kerigma:kerigma" | chpasswd
@@ -182,13 +193,17 @@ User=kerigma
 Session=plasma.desktop
 SDDM
 
-update-initramfs -u -k all || true
+# Atualiza initramfs e garante symlinks /vmlinuz e /initrd.img na raiz
+update-initramfs -u -k all
+KVER=$(ls /boot | grep "^vmlinuz-" | sed 's/^vmlinuz-//' | sort -V | tail -n 1)
+ln -sf "/boot/vmlinuz-$KVER" /vmlinuz
+ln -sf "/boot/initrd.img-$KVER" /initrd.img
 
 apt-get clean
 rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 EOF
 
-echo "=== [5/8] Injetando Configurações do Calamares e Arquivos Kerigma ==="
+echo "=== [5/9] Injetando Configurações do Calamares e Arquivos Kerigma ==="
 if [ -d "$REPO_ROOT/custom-files" ]; then
     cp -r "$REPO_ROOT/custom-files/"* "$CHROOT/" || true
 fi
@@ -206,25 +221,72 @@ if [ -f "$REPO_ROOT/kerigma-welcome.desktop" ]; then
 fi
 
 mkdir -p "$CHROOT/boot/grub" "$CHROOT/boot/efi"
-
 bash "$SCRIPT_DIR/configure-calamares.sh" "$CHROOT"
 
-echo "=== [6/8] Desmontando Sistemas Virtuais com Segurança (LFS Seção 7.13.2) ==="
-umount -lf "$CHROOT/dev/shm" 2>/dev/null || true
-umount -lf "$CHROOT/dev/pts" 2>/dev/null || true
-umount -lf "$CHROOT/sys" 2>/dev/null || true
-umount -lf "$CHROOT/proc" 2>/dev/null || true
-umount -lf "$CHROOT/run" 2>/dev/null || true
-umount -lf "$CHROOT/dev" 2>/dev/null || true
+echo "=== [6/9] Executando Auto-Teste Rigoroso de Integridade ==="
+chroot "$CHROOT" bash -n /usr/local/sbin/kerigma-calamares-pre.sh
+chroot "$CHROOT" bash -n /usr/local/sbin/kerigma-calamares-post.sh
 
-echo "=== [7/8] Gerando SquashFS (COM /boot INCLUSO) e Copiando Kernel/Initrd ==="
+chroot "$CHROOT" python3 - << 'PYTEST'
+import yaml, glob, os
+
+# 1. Valida sintaxe YAML de todos os arquivos do Calamares
+conf_files = glob.glob("/etc/calamares/modules/*.conf") + ["/etc/calamares/settings.conf"]
+assert len(conf_files) >= 9, f"Poucos arquivos de configuração encontrados: {conf_files}"
+for path in conf_files:
+    with open(path, "r") as f:
+        data = yaml.safe_load(f)
+    assert isinstance(data, dict) and len(data) > 0, f"YAML inválido ou vazio: {path}"
+
+# 2. Valida sequência do settings.conf e existência de cada módulo instalado
+with open("/etc/calamares/settings.conf") as f:
+    s = yaml.safe_load(f)
+
+exec_steps = []
+for block in s["sequence"]:
+    for phase in ("show", "exec"):
+        if phase in block:
+            for item in block[phase]:
+                mod_name = item.split("@")[0]
+                mod_dir = f"/usr/lib/calamares/modules/{mod_name}"
+                assert os.path.isdir(mod_dir), f"Módulo do Calamares ausente: {mod_dir}"
+            if phase == "exec":
+                exec_steps = block[phase]
+
+assert "packages" not in exec_steps, "ERRO: módulo packages não pode estar ativo!"
+assert "unpackfs" in exec_steps and "grubcfg" in exec_steps and "bootloader" in exec_steps
+assert exec_steps.index("shellprocess@pre") < exec_steps.index("users"), "shellprocess@pre deve rodar antes de users!"
+assert exec_steps.index("bootloader") < exec_steps.index("shellprocess@post"), "shellprocess@post deve rodar após bootloader!"
+
+# 3. Garante Kernel, Initrd, SquashFS tools e binários do GRUB
+assert os.path.exists("/vmlinuz") and os.path.exists("/initrd.img"), "Symlinks /vmlinuz ou /initrd.img ausentes!"
+for bin_path in [
+    "/usr/sbin/grub-install",
+    "/usr/sbin/grub-mkconfig",
+    "/usr/sbin/update-grub",
+    "/usr/bin/calamares",
+    "/usr/bin/unsquashfs",
+    "/usr/bin/rsync",
+    "/usr/local/sbin/kerigma-calamares-pre.sh",
+    "/usr/local/sbin/kerigma-calamares-post.sh",
+]:
+    assert os.path.exists(bin_path), f"Binário/script ausente: {bin_path}"
+
+print("AUTO-TESTE RIGOROSO APROVADO COM 100% DE SUCESSO!")
+PYTEST
+
+echo "=== [7/9] Desmontando Sistemas Virtuais com Segurança ==="
+cleanup_mounts
+trap - EXIT
+
+echo "=== [8/9] Gerando SquashFS (COM /boot INCLUSO) e Copiando Kernel/Initrd ==="
 mksquashfs "$CHROOT" "$ISODIR/live/filesystem.squashfs" -comp zstd -Xcompression-level 15
 
-KERNEL_VERSION=$(ls "$CHROOT/boot" | grep "vmlinuz-" | sed 's/vmlinuz-//' | sort -V | tail -n 1)
+KERNEL_VERSION=$(ls "$CHROOT/boot" | grep "^vmlinuz-" | sed 's/^vmlinuz-//' | sort -V | tail -n 1)
 cp "$CHROOT/boot/vmlinuz-$KERNEL_VERSION" "$ISODIR/live/vmlinuz"
 cp "$CHROOT/boot/initrd.img-$KERNEL_VERSION" "$ISODIR/live/initrd"
 
-echo "=== [8/8] Criando Menu GRUB Híbrido (BIOS + UEFI) e Compilando ISO ==="
+echo "=== [9/9] Criando Menu GRUB Híbrido (BIOS + UEFI) e Compilando ISO ==="
 cat << 'GRUBCFG' > "$ISODIR/boot/grub/grub.cfg"
 set default="0"
 set timeout=5
@@ -241,4 +303,6 @@ menuentry "Iniciar Kerigma OS (Modo Seguro / Compatibilidade)" {
 GRUBCFG
 
 grub-mkrescue -o "$REPO_ROOT/KerigmaOS-Complete-amd64.iso" "$ISODIR"
+test -s "$REPO_ROOT/KerigmaOS-Complete-amd64.iso"
+ls -lh "$REPO_ROOT/KerigmaOS-Complete-amd64.iso"
 echo "=== CONCLUÍDO COM SUCESSO: $REPO_ROOT/KerigmaOS-Complete-amd64.iso ==="
