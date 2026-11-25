@@ -1,439 +1,309 @@
-#!/usr/bin/env bash
-set -e
+#!/bin/bash
+# ==============================================================================
+# KERIGMA OS - ATUALIZADOR ONLINE E TRANSFORMAÇÃO VISUAL (v1.1)
+# Localização no GitHub: update.sh
+# ==============================================================================
+set -euo pipefail
 
-echo "=================================================="
-echo " Baixando atualizações de segurança e aplicativos..."
-echo "=================================================="
+# >>> ALTERE PARA O SEU USUÁRIO/REPOSITÓRIO DO GITHUB <<<
+GITHUB_REPO="SEU_USUARIO/SEU_REPOSITORIO"
+GITHUB_BRANCH="main"
+KERIGMA_VERSION="1.1.0"
 
-# 1. Sincronizar repositórios contornando erros de relógio (caso ocorram)
-sudo apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Check-Date=false update
+echo "============================================================"
+echo "   KERIGMA OS - ATUALIZAÇÃO ONLINE v${KERIGMA_VERSION}"
+echo "============================================================"
 
-# 2. Instalar atualizações do Debian silenciosamente (mantendo configs originais)
-sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y \
-    -o Dpkg::Options::="--force-confdef" \
-    -o Dpkg::Options::="--force-confold"
-
-# 3. Atualizar aplicativos de Loja (Flatpak) caso existam
-if command -v flatpak &> /dev/null; then
-    echo "Atualizando aplicativos Flatpak..."
-    sudo flatpak update -y
+# 1. Garante privilégios de root preservando o usuário real do Desktop
+if [ "$(id -u)" -ne 0 ]; then
+    echo ">>> Solicitando permissão de administrador (sudo)..."
+    exec sudo GITHUB_REPO="$GITHUB_REPO" GITHUB_BRANCH="$GITHUB_BRANCH" bash "$0" "$@"
 fi
 
-# 4. Limpar ficheiros de instalação antigos para poupar disco
-sudo apt-get autoremove -y
-sudo apt-get clean
+TARGET_USER="${SUDO_USER:-$(logname 2>/dev/null || ls /home | head -n 1)}"
+TARGET_UID="$(id -u "$TARGET_USER")"
+TARGET_HOME="$(eval echo "~$TARGET_USER")"
 
+if [ -z "$TARGET_USER" ] || [ ! -d "$TARGET_HOME" ]; then
+    echo "ERRO: Não foi possível identificar o usuário da sessão gráfica."
+    exit 1
+fi
 
-
-echo "=================================================="
-echo "   Iniciando Atualização do KerigmaOS (v1.1)      "
-echo "=================================================="
-
-# 1. Instalar suporte ao Menu Global Dinâmico (GTK e Qt/KDE)
-sudo chmod 0440 /etc/sudoers.d/kerigma 2>/dev/null || true
-sudo apt-get -o Acquire::Check-Valid-Until=false -o Acquire::Check-Date=false update
-sudo apt-get install -y --no-install-recommends \
-    appmenu-gtk2-module appmenu-gtk3-module \
-    libdbusmenu-glib4 libdbusmenu-gtk3-4 libdbusmenu-qt5-2 \
-    python3-pyqt5 libqt5svg5 qdbus-qt5 dconf-cli
-
-# 2. Garantir o Símbolo Oficial do KerigmaOS
-sudo mkdir -p /usr/share/pixmaps
-cat << 'LOGOSVG' | sudo tee /usr/share/pixmaps/kerigma-logo.svg > /dev/null
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
-  <defs>
-    <linearGradient id="kg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#007aff"/>
-      <stop offset="100%" stop-color="#5856d6"/>
-    </linearGradient>
-  </defs>
-  <rect width="112" height="112" x="8" y="8" rx="28" fill="url(#kg)"/>
-  <path d="M42 32 v64 M42 64 L82 32 M56 52 L86 96" stroke="#ffffff" stroke-width="12" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-</svg>
-LOGOSVG
-
-# Criar ícone estilo Launchpad para a Dock
-cat << 'LAUNCHSVG' | sudo tee /usr/share/pixmaps/kerigma-launchpad.svg > /dev/null
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
-  <defs>
-    <linearGradient id="lg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#1e1e2e"/>
-      <stop offset="100%" stop-color="#2d2d44"/>
-    </linearGradient>
-  </defs>
-  <rect width="112" height="112" x="8" y="8" rx="26" fill="url(#lg)" stroke="#4a4a6a" stroke-width="3"/>
-  <rect x="28" y="28" width="20" height="20" rx="5" fill="#ff3b30"/>
-  <rect x="54" y="28" width="20" height="20" rx="5" fill="#4cd964"/>
-  <rect x="80" y="28" width="20" height="20" rx="5" fill="#007aff"/>
-  <rect x="28" y="54" width="20" height="20" rx="5" fill="#ff9500"/>
-  <rect x="54" y="54" width="20" height="20" rx="5" fill="#5856d6"/>
-  <rect x="80" y="54" width="20" height="20" rx="5" fill="#5ac8fa"/>
-  <rect x="28" y="80" width="20" height="20" rx="5" fill="#ffcc00"/>
-  <rect x="54" y="80" width="20" height="20" rx="5" fill="#ff2d55"/>
-  <rect x="80" y="80" width="20" height="20" rx="5" fill="#34c759"/>
-</svg>
-LAUNCHSVG
-
-# 3. Criar o Kerigma Launchpad (Grade de Aplicativos em Tela Cheia estilo macOS)
-cat << 'LAUNCHPY' | sudo tee /usr/local/bin/kerigma-launchpad > /dev/null
-#!/usr/bin/env python3
-import os
-import glob
-import subprocess
-import configparser
-from PyQt5.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QLineEdit, QToolButton, QScrollArea, QFrame
-)
-from PyQt5.QtCore import Qt, QSize
-from PyQt5.QtGui import QIcon, QFont, QCursor
-
-
-class KerigmaLaunchpad(QWidget):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Kerigma Launchpad")
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self.showFullScreen()
-        self.apps = self.load_applications()
-        self.setup_ui()
-
-    def load_applications(self):
-        app_list = []
-        seen_names = set()
-        desktop_files = glob.glob("/usr/share/applications/*.desktop") + \
-                        glob.glob(os.path.expanduser("~/.local/share/applications/*.desktop"))
-
-        for filepath in sorted(desktop_files):
-            cp = configparser.ConfigParser(interpolation=None)
-            try:
-                cp.read(filepath, encoding="utf-8")
-                if "Desktop Entry" not in cp:
-                    continue
-                entry = cp["Desktop Entry"]
-                if entry.get("NoDisplay", "false").lower() == "true":
-                    continue
-                if entry.get("Type", "") != "Application":
-                    continue
-
-                name = entry.get("Name[pt_BR]", entry.get("Name[pt]", entry.get("Name", "")))
-                exec_cmd = entry.get("Exec", "")
-                icon_name = entry.get("Icon", "application-x-executable")
-
-                if not name or not exec_cmd or name in seen_names:
-                    continue
-                seen_names.add(name)
-
-                # Limpar parâmetros %U, %F do comando Exec
-                clean_exec = " ".join([p for p in exec_cmd.split() if not p.startswith("%")])
-                app_list.append((name, clean_exec, icon_name))
-            except Exception:
-                continue
-
-        return sorted(app_list, key=lambda x: x[0].lower())
-
-    def setup_ui(self):
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-
-        bg_frame = QFrame(self)
-        bg_frame.setStyleSheet("""
-            QFrame {
-                background-color: rgba(16, 16, 28, 232);
-            }
-            QLineEdit {
-                background-color: rgba(255, 255, 255, 28);
-                border: 1px solid rgba(255, 255, 255, 45);
-                border-radius: 10px;
-                padding: 8px 16px;
-                color: #ffffff;
-                font-size: 14px;
-            }
-            QToolButton {
-                background-color: transparent;
-                color: #f2f2f7;
-                border: none;
-                border-radius: 14px;
-                padding: 12px;
-                font-size: 12px;
-            }
-            QToolButton:hover {
-                background-color: rgba(255, 255, 255, 25);
-            }
-            QScrollArea {
-                background: transparent;
-                border: none;
-            }
-        """)
-
-        frame_layout = QVBoxLayout(bg_frame)
-        frame_layout.setContentsMargins(80, 45, 80, 60)
-        frame_layout.setSpacing(30)
-
-        # Barra de Busca Centralizada igual ao macOS Launchpad
-        search_row = QHBoxLayout()
-        search_row.addStretch()
-        self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("🔍  Buscar aplicativos...")
-        self.search_input.setFixedWidth(320)
-        self.search_input.setAlignment(Qt.AlignCenter)
-        self.search_input.textChanged.connect(self. populate_grid)
-        search_row.addWidget(self.search_input)
-        search_row.addStretch()
-        frame_layout.addLayout(search_row)
-
-        # Grade de Aplicativos
-        self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(True)
-        self.scroll.viewport().setStyleSheet("background: transparent;")
-
-        self.grid_container = QWidget()
-        self.grid_container.setStyleSheet("background: transparent;")
-        self.grid_layout = QGridLayout(self.grid_container)
-        self.grid_layout.setSpacing(28)
-        self.grid_layout.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
-
-        self.scroll.setWidget(self.grid_container)
-        frame_layout.addWidget(self.scroll)
-        main_layout.addWidget(bg_frame)
-
-        self.populate_grid("")
-        self.search_input.setFocus()
-
-    def get_icon(self, icon_name):
-        if os.path.isfile(icon_name):
-            return QIcon(icon_name)
-        icon = QIcon.fromTheme(icon_name)
-        if icon.isNull():
-            icon = QIcon.fromTheme("application-x-executable")
-        return icon
-
-    def populate_grid(self, filter_text):
-        while self.grid_layout.count():
-            item = self.grid_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
-        cols = 7
-        row, col = 0, 0
-        query = filter_text.strip().lower()
-
-        for name, cmd, icon_name in self.apps:
-            if query and query not in name.lower():
-                continue
-
-            btn = QToolButton()
-            btn.setText(name[:18] + ("..." if len(name) > 18 else ""))
-            btn.setToolTip(name)
-            btn.setIcon(self.get_icon(icon_name))
-            btn.setIconSize(QSize(64, 64))
-            btn.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
-            btn.setFixedSize(125, 115)
-            btn.setCursor(QCursor(Qt.PointingHandCursor))
-            btn.setFont(QFont("Noto Sans", 10))
-            btn.clicked.connect(lambda checked, c=cmd: self.launch_app(c))
-
-            self.grid_layout.addWidget(btn, row, col)
-            col += 1
-            if col >= cols:
-                col = 0
-                row += 1
-
-    def launch_app(self, cmd):
-        subprocess.Popen(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        self.close()
-
-    def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Escape:
-            self.close()
-
-    def mousePressEvent(self, event):
-        self.close()
-
-
-if __name__ == "__main__":
-    app = QApplication([])
-    lp = KerigmaLaunchpad()
-    lp.show()
-    app.exec_()
-LAUNCHPY
-sudo chmod +x /usr/local/bin/kerigma-launchpad
-
-cat << 'LAUNCHDESK' | sudo tee /usr/share/applications/kerigma-launchpad.desktop > /dev/null
-[Desktop Entry]
-Type=Application
-Name=Aplicativos (Launchpad)
-Comment=Grade de todos os aplicativos instalados no KerigmaOS
-Exec=/usr/local/bin/kerigma-launchpad
-Icon=/usr/share/pixmaps/kerigma-launchpad.svg
-Terminal=false
-Categories=System;Utility;
-LAUNCHDESK
-
-# 4. Criar Widget Nativo da Barra Superior que mostra o nome do App Ativo (Estilo macOS Finder)
-PLASMOID_DIR="/usr/share/plasma/plasmoids/org.kerigma.windowtitle"
-sudo mkdir -p "$PLASMOID_DIR/contents/ui"
-
-cat << 'METAEOF' | sudo tee "$PLASMOID_DIR/metadata.desktop" > /dev/null
-[Desktop Entry]
-Name=Kerigma Active App Title
-Comment=Exibe o nome do aplicativo ativo na barra superior estilo macOS
-Type=Service
-X-KDE-ServiceTypes=Plasma/Applet
-X-Plasma-API=declarativeappletscript
-X-Plasma-MainScript=ui/main.qml
-X-KDE-PluginInfo-Name=org.kerigma.windowtitle
-X-KDE-PluginInfo-Version=1.0
-METAEOF
-
-cat << 'QMLEOF' | sudo tee "$PLASMOID_DIR/contents/ui/main.qml" > /dev/null
-import QtQuick 2.0
-import QtQuick.Layouts 1.1
-import org.kde.plasma.plasmoid 2.0
-import org.kde.plasma.core 2.0 as PlasmaCore
-import org.kde.plasma.components 2.0 as PlasmaComponents
-import org.kde.taskmanager 0.1 as TaskManager
-
-Item {
-    id: root
-    Layout.preferredWidth: titleLabel.implicitWidth + 18
-    Layout.minimumWidth: titleLabel.implicitWidth + 18
-    Layout.fillHeight: true
-    Plasmoid.preferredRepresentation: Plasmoid.fullRepresentation
-
-    TaskManager.ActivityInfo { id: activityInfo }
-    TaskManager.VirtualDesktopInfo { id: virtualDesktopInfo }
-
-    TaskManager.TasksModel {
-        id: tasksModel
-        sortMode: TaskManager.TasksModel.SortVirtualDesktop
-        groupMode: TaskManager.TasksModel.GroupDisabled
-        activity: activityInfo.currentActivity
-        virtualDesktop: virtualDesktopInfo.currentDesktop
-        filterByActivity: true
-        filterByVirtualDesktop: true
-    }
-
-    function activeAppTitle() {
-        for (var i = 0; i < tasksModel.count; i++) {
-            var idx = tasksModel.index(i, 0);
-            if (tasksModel.data(idx, TaskManager.AbstractTasksModel.IsActive)) {
-                var app = tasksModel.data(idx, TaskManager.AbstractTasksModel.AppName);
-                if (app && app.length > 0) return app;
-            }
-        }
-        return "Finder";
-    }
-
-    PlasmaComponents.Label {
-        id: titleLabel
-        anchors.centerIn: parent
-        text: activeAppTitle()
-        font.bold: true
-        font.pixelSize: 13
-    }
-
-    Connections {
-        target: tasksModel
-        function onActiveTaskChanged() { titleLabel.text = activeAppTitle(); }
-        function onDataChanged() { titleLabel.text = activeAppTitle(); }
-        function onCountChanged() { titleLabel.text = activeAppTitle(); }
-    }
+run_as_user() {
+    sudo -u "$TARGET_USER" \
+        env DISPLAY=":0" \
+        XDG_RUNTIME_DIR="/run/user/$TARGET_UID" \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$TARGET_UID/bus" \
+        "$@"
 }
-QMLEOF
 
-# 5. Criar o comando de Atualização Contínua (kerigma-update) para futuras atualizações sem formatar
-cat << 'UPDATESCRIPT' | sudo tee /usr/local/bin/kerigma-update > /dev/null
-#!/usr/bin/env bash
-echo "Buscando atualizações oficiais no repositório do KerigmaOS..."
-curl -fsSL https://raw.githubusercontent.com/rafaelgrulke-sketch/KerigmaOS/main/update.sh | sudo bash
-UPDATESCRIPT
-sudo chmod +x /usr/local/bin/kerigma-update
+echo ">>> [1/7] Instalando pacotes visuais e ferramentas de atualização..."
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y -qq \
+    plank \
+    papirus-icon-theme \
+    fonts-roboto \
+    fonts-noto-color-emoji \
+    dconf-cli \
+    qdbus-qt5 \
+    libkf5config-bin \
+    kdialog \
+    librsvg2-bin \
+    curl \
+    neofetch
 
-cat << 'UPDATEDESK' | sudo tee /usr/share/applications/kerigma-update.desktop > /dev/null
+echo ">>> [2/7] Configurando identidade oficial do Kerigma OS..."
+cat > /etc/os-release << EOF
+PRETTY_NAME="Kerigma OS ${KERIGMA_VERSION}"
+NAME="Kerigma OS"
+VERSION_ID="${KERIGMA_VERSION}"
+VERSION="${KERIGMA_VERSION} (Bookworm)"
+VERSION_CODENAME=bookworm
+ID=kerigma
+ID_LIKE=debian
+HOME_URL="https://github.com/${GITHUB_REPO}"
+SUPPORT_URL="https://github.com/${GITHUB_REPO}"
+BUG_REPORT_URL="https://github.com/${GITHUB_REPO}/issues"
+EOF
+
+echo "${KERIGMA_VERSION}" > /etc/kerigma-version
+cat > /etc/kerigma-updater.conf << EOF
+GITHUB_REPO="${GITHUB_REPO}"
+GITHUB_BRANCH="${GITHUB_BRANCH}"
+EOF
+
+echo ">>> [3/7] Gerando papel de parede exclusivo Kerigma OS (1920x1080)..."
+WALL_DIR="/usr/share/wallpapers/KerigmaOS"
+mkdir -p "$WALL_DIR"
+
+cat > "$WALL_DIR/kerigma-wallpaper.svg" << 'EOF'
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0b1021"/>
+      <stop offset="50%" stop-color="#17153b"/>
+      <stop offset="100%" stop-color="#090d16"/>
+    </linearGradient>
+    <radialGradient id="glow1" cx="25%" cy="30%" r="50%">
+      <stop offset="0%" stop-color="#ff2e93" stop-opacity="0.45"/>
+      <stop offset="100%" stop-color="#ff2e93" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glow2" cx="78%" cy="68%" r="48%">
+      <stop offset="0%" stop-color="#00d2ff" stop-opacity="0.40"/>
+      <stop offset="100%" stop-color="#00d2ff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="wave" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#ff2e93" stop-opacity="0.35"/>
+      <stop offset="50%" stop-color="#7c3aed" stop-opacity="0.45"/>
+      <stop offset="100%" stop-color="#00d2ff" stop-opacity="0.35"/>
+    </linearGradient>
+  </defs>
+  <rect width="1920" height="1080" fill="url(#bg)"/>
+  <rect width="1920" height="1080" fill="url(#glow1)"/>
+  <rect width="1920" height="1080" fill="url(#glow2)"/>
+  <path d="M0,760 C420,620 760,920 1220,700 C1540,545 1740,640 1920,580 L1920,1080 L0,1080 Z" fill="url(#wave)"/>
+  <path d="M0,860 C520,730 980,980 1440,810 C1680,720 1820,760 1920,720 L1920,1080 L0,1080 Z" fill="#090d16" fill-opacity="0.55"/>
+  <circle cx="960" cy="490" r="110" fill="none" stroke="#ffffff" stroke-opacity="0.14" stroke-width="2"/>
+  <circle cx="960" cy="490" r="78" fill="none" stroke="#ff2e93" stroke-opacity="0.35" stroke-width="2"/>
+  <text x="960" y="512" text-anchor="middle" fill="#ffffff" fill-opacity="0.90" font-family="Roboto, sans-serif" font-size="64" font-weight="300" letter-spacing="14">KERIGMA OS</text>
+  <text x="960" y="555" text-anchor="middle" fill="#cbd5e1" fill-opacity="0.55" font-family="Roboto, sans-serif" font-size="18" letter-spacing="8">DEBIAN EDITION</text>
+</svg>
+EOF
+
+rsvg-convert -w 1920 -h 1080 "$WALL_DIR/kerigma-wallpaper.svg" -o "$WALL_DIR/kerigma-wallpaper.png"
+chmod 644 "$WALL_DIR/kerigma-wallpaper.png" "$WALL_DIR/kerigma-wallpaper.svg"
+
+echo ">>> [4/7] Instalando comando permanente kerigma-update e atalho gráfico..."
+cat > /usr/local/bin/kerigma-update << 'EOF'
+#!/bin/bash
+set -e
+
+if [ -f /etc/kerigma-updater.conf ]; then
+    source /etc/kerigma-updater.conf
+fi
+
+if [ -z "${GITHUB_REPO:-}" ] || [ "$GITHUB_REPO" = "SEU_USUARIO/SEU_REPOSITORIO" ]; then
+    echo "ERRO: Configure GITHUB_REPO em /etc/kerigma-updater.conf"
+    exit 1
+fi
+
+URL="https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH:-main}/update.sh"
+TMP_SCRIPT="/tmp/kerigma-online-update.sh"
+
+echo ">>> Baixando atualização de: $URL"
+curl -fsSL "$URL" -o "$TMP_SCRIPT"
+bash -n "$TMP_SCRIPT"
+chmod +x "$TMP_SCRIPT"
+exec bash "$TMP_SCRIPT"
+EOF
+chmod +x /usr/local/bin/kerigma-update
+
+cat > /usr/share/applications/kerigma-updater.desktop << 'EOF'
 [Desktop Entry]
 Type=Application
-Name=Atualizar KerigmaOS
-Comment=Baixar última atualização do sistema direto do GitHub sem formatar
-Exec=konsole -e /usr/local/bin/kerigma-update
-Icon=/usr/share/pixmaps/kerigma-logo.svg
+Name=Atualizar Kerigma OS
+Comment=Baixa e aplica a atualização mais recente do Kerigma OS online
+Exec=konsole -e bash -c "kerigma-update; echo ''; read -p 'Pressione ENTER para fechar...'"
+Icon=system-software-update
 Terminal=false
-Categories=System;
-UPDATEDESK
+Categories=System;Settings;
+EOF
+chmod 644 /usr/share/applications/kerigma-updater.desktop
 
-# 6. Aplicar Barra Superior estilo macOS + Menu Global + Launchpad na Dock para o usuário atual e /etc/skel
-TARGET_USER="${SUDO_USER:-kerigma}"
-USER_HOME=$(eval echo "~$TARGET_USER")
+echo ">>> [5/7] Criando tema KerigmaGlass e configurando o Dock (Plank)..."
+PLANK_THEME_DIR="/usr/share/plank/themes/KerigmaGlass"
+mkdir -p "$PLANK_THEME_DIR"
+cat > "$PLANK_THEME_DIR/dock.theme" << 'EOF'
+[PlankTheme]
+TopRoundness=14
+BottomRoundness=14
+LineWidth=1
+OuterStrokeColor=255;;255;;255;;45
+FillStartColor=18;;20;;34;;210
+FillEndColor=18;;20;;34;;210
+InnerStrokeColor=255;;255;;255;;25
 
-sudo rm -f /etc/xdg/autostart/calamares-desktop-icon.desktop
-rm -f "$USER_HOME/Desktop/install-debian.desktop" "$USER_HOME/Área de Trabalho/install-debian.desktop" 2>/dev/null || true
+[PlankDockTheme]
+HorizPadding=6
+TopPadding=4
+BottomPadding=3
+ItemPadding=6
+IndicatorSize=5
+IconShadowSize=2
+UrgentBounceHeight=1.5
+LaunchBounceHeight=0.6
+FadeOpacity=1
+ClickTime=300
+UrgentBounceTime=600
+LaunchBounceTime=600
+ActiveTime=300
+SlideTime=300
+FadeTime=250
+HideTime=250
+GlowSize=24
+GlowTime=10000
+GlowPulseTime=2000
+GlowMode=1
+UrgentHueShift=150
+ItemMoveTime=450
+CascadeHide=true
+BadgeColor=255;;46;;147;;255
+EOF
 
-# Configurar GTK para exportar Arquivo, Editar, Visualizar para a barra superior
-cat << 'GTKENV' | sudo tee /etc/profile.d/kerigma-appmenu.sh > /dev/null
-export GTK_MODULES="appmenu-gtk-module"
-export UBUNTU_MENUPROXY=1
-GTKENV
+DOCK_DIR="$TARGET_HOME/.config/plank/dock1/launchers"
+mkdir -p "$DOCK_DIR"
+rm -f "$DOCK_DIR/"*.dockitem
 
-sudo -u "$TARGET_USER" mkdir -p "$USER_HOME/.config/gtk-3.0" "$USER_HOME/.config/plank/dock1/launchers"
-cat << 'GTKINI' | sudo -u "$TARGET_USER" tee "$USER_HOME/.config/gtk-3.0/settings.ini" > /dev/null
-[Settings]
-gtk-application-prefer-dark-theme=1
-gtk-shell-shows-app-menu=1
-gtk-shell-shows-menubar=1
-GTKINI
-
-# Fixar o Launchpad como primeiro ícone da Dock inferior (Plank)
-cat << 'LPDOCK' | sudo -u "$TARGET_USER" tee "$USER_HOME/.config/plank/dock1/launchers/kerigma-launchpad.dockitem" > /dev/null
+add_dock_item() {
+    local desktop_path="$1"
+    local item_name="$2"
+    if [ -f "$desktop_path" ]; then
+        cat > "$DOCK_DIR/${item_name}.dockitem" << EOF
 [PlankDockItemPreferences]
-Launcher=file:///usr/share/applications/kerigma-launchpad.desktop
-LPDOCK
+Launcher=file://${desktop_path}
+EOF
+    fi
+}
 
-# Script que transforma o painel do KDE na Barra Superior do macOS com Menu Dinâmico
-cat << 'APPLYBAR' | sudo tee /usr/local/bin/kerigma-apply-topbar > /dev/null
-#!/usr/bin/env bash
-kwriteconfig5 --file kded5rc --group Module-appmenu --key autoload true
-kwriteconfig5 --file kwinrc --group org.kde.kdecoration2 --key ButtonsOnLeft "XIA"
-kwriteconfig5 --file kwinrc --group org.kde.kdecoration2 --key ButtonsOnRight ""
-qdbus-qt5 org.kde.kded5 /kded org.kde.kded5.loadModule appmenu 2>/dev/null || true
-qdbus-qt5 org.kde.KWin /KWin reconfigure 2>/dev/null || true
+add_dock_item "/usr/share/applications/org.kde.dolphin.desktop" "01-dolphin"
+add_dock_item "/usr/share/applications/org.kde.konsole.desktop" "02-konsole"
+add_dock_item "/usr/share/applications/org.kde.kate.desktop" "03-kate"
+add_dock_item "/usr/share/applications/vlc.desktop" "04-vlc"
+add_dock_item "/usr/share/applications/systemsettings.desktop" "05-settings"
+add_dock_item "/usr/share/applications/kerigma-updater.desktop" "06-updater"
+add_dock_item "/usr/share/applications/kerigma-welcome.desktop" "07-welcome"
 
-JS_SCRIPT='
+chown -R "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/.config/plank"
+
+# Garante autostart do Plank
+mkdir -p /etc/xdg/autostart
+cat > /etc/xdg/autostart/plank.desktop << 'EOF'
+[Desktop Entry]
+Type=Application
+Name=Kerigma Dock
+Exec=plank
+Icon=plank
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+EOF
+
+run_as_user dconf write /net/launchpad/plank/docks/dock1/theme "'KerigmaGlass'" || true
+run_as_user dconf write /net/launchpad/plank/docks/dock1/position "'bottom'" || true
+run_as_user dconf write /net/launchpad/plank/docks/dock1/icon-size 44 || true
+run_as_user dconf write /net/launchpad/plank/docks/dock1/zoom-enabled true || true
+run_as_user dconf write /net/launchpad/plank/docks/dock1/zoom-percent 145 || true
+run_as_user dconf write /net/launchpad/plank/docks/dock1/hide-mode "'intelligent'" || true
+run_as_user dconf write /net/launchpad/plank/docks/dock1/show-dock-item false || true
+
+echo ">>> [6/7] Aplicando tema visual, ícones, fontes e botões estilo macOS no KDE..."
+if command -v lookandfeeltool >/dev/null 2>&1; then
+    run_as_user lookandfeeltool -a org.kde.breezedark.desktop || true
+fi
+
+run_as_user kwriteconfig5 --file kdeglobals --group Icons --key Theme "Papirus-Dark"
+run_as_user kwriteconfig5 --file kdeglobals --group General --key font "Roboto,10,-1,5,50,0,0,0,0,0"
+run_as_user kwriteconfig5 --file kdeglobals --group General --key menuFont "Roboto,10,-1,5,50,0,0,0,0,0"
+run_as_user kwriteconfig5 --file kdeglobals --group WM --key activeFont "Roboto,10,-1,5,75,0,0,0,0,0"
+
+# Botões das janelas à esquerda (Fechar, Minimizar, Maximizar - estilo macOS)
+run_as_user kwriteconfig5 --file kwinrc --group org.kde.kdecoration2 --key ButtonsOnLeft "XIA"
+run_as_user kwriteconfig5 --file kwinrc --group org.kde.kdecoration2 --key ButtonsOnRight ""
+run_as_user kwriteconfig5 --file kwinrc --group org.kde.kdecoration2 --key BorderSize "None"
+run_as_user kwriteconfig5 --file kwinrc --group Plugins --key blurEnabled true
+run_as_user kwriteconfig5 --file kwinrc --group Plugins --key contrastEnabled true
+
+echo ">>> [7/7] Construindo Barra Superior estilo macOS e aplicando Papel de Parede..."
+QDBUS_BIN="$(command -v qdbus-qt5 || command -v qdbus || true)"
+if [ -n "$QDBUS_BIN" ] && pgrep -u "$TARGET_USER" plasmashell >/dev/null 2>&1; then
+    PLASMA_JS='
 var allPanels = panels();
 for (var i = 0; i < allPanels.length; i++) {
     allPanels[i].remove();
 }
-var topBar = new Panel("org.kde.panel");
-topBar.location = "top";
-topBar.height = 28;
 
-var logoMenu = topBar.addWidget("org.kde.plasma.kickoff");
-logoMenu.currentConfigGroup = ["General"];
-logoMenu.writeConfig("icon", "/usr/share/pixmaps/kerigma-logo.svg");
+var panel = new Panel;
+panel.location = "top";
+panel.height = 30;
+panel.alignment = "center";
 
-topBar.addWidget("org.kerigma.windowtitle");
-topBar.addWidget("org.kde.plasma.appmenu");
-topBar.addWidget("org.kde.plasma.panelspacer");
-topBar.addWidget("org.kde.plasma.systemtray");
+var kickoff = panel.addWidget("org.kde.plasma.kickoff");
+kickoff.currentConfigGroup = ["General"];
+kickoff.writeConfig("icon", "start-here-kde");
+kickoff.writeConfig("alphaSort", true);
 
-var clock = topBar.addWidget("org.kde.plasma.digitalclock");
+panel.addWidget("org.kde.plasma.appmenu");
+panel.addWidget("org.kde.plasma.panelspacer");
+
+var clock = panel.addWidget("org.kde.plasma.digitalclock");
 clock.currentConfigGroup = ["Appearance"];
 clock.writeConfig("showDate", true);
+clock.writeConfig("dateFormat", "shortDate");
+clock.writeConfig("use24hFormat", 2);
+
+panel.addWidget("org.kde.plasma.panelspacer");
+panel.addWidget("org.kde.plasma.systemtray");
+
+var allDesktops = desktops();
+for (var j = 0; j < allDesktops.length; j++) {
+    var d = allDesktops[j];
+    d.wallpaperPlugin = "org.kde.image";
+    d.currentConfigGroup = ["Wallpaper", "org.kde.image", "General"];
+    d.writeConfig("Image", "file:///usr/share/wallpapers/KerigmaOS/kerigma-wallpaper.png");
+}
 '
-qdbus-qt5 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript "$JS_SCRIPT" 2>/dev/null || true
+    run_as_user "$QDBUS_BIN" org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript "$PLASMA_JS" || true
+    run_as_user "$QDBUS_BIN" org.kde.KWin /KWin reconfigure || true
+fi
 
-dconf write /net/launchpad/plank/docks/dock1/zoom-enabled true 2>/dev/null || true
-dconf write /net/launchpad/plank/docks/dock1/icon-size 48 2>/dev/null || true
-dconf write /net/launchpad/plank/docks/dock1/dock-items "['kerigma-launchpad.dockitem', 'kerigma-settings.dockitem', 'org.kde.dolphin.dockitem', 'org.kde.discover.dockitem', 'org.kde.konsole.dockitem', 'codium.dockitem', 'firefox-esr.dockitem', 'kerigma-installer.dockitem']" 2>/dev/null || true
-pkill plank 2>/dev/null || true
-nohup plank >/dev/null 2>&1 &
-APPLYBAR
-sudo chmod +x /usr/local/bin/kerigma-apply-topbar
+# Reinicia o Plank Dock já com o tema KerigmaGlass
+pkill -u "$TARGET_USER" -x plank 2>/dev/null || true
+sleep 1
+run_as_user nohup plank >/dev/null 2>&1 &
 
-# Executar a transformação visual imediatamente na sessão ativa
-sudo -u "$TARGET_USER" DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u "$TARGET_USER")/bus" /usr/local/bin/kerigma-apply-topbar || true
-
-echo "=================================================="
-echo " Atualização concluída! Barra macOS e Launchpad   "
-echo " ativados com sucesso no seu KerigmaOS!           "
-echo "=================================================="
+echo "============================================================"
+echo "   KERIGMA OS ATUALIZADO COM SUCESSO PARA v${KERIGMA_VERSION}!"
+echo "   Da próxima vez, basta abrir o app 'Atualizar Kerigma OS'"
+echo "   ou digitar 'kerigma-update' no terminal."
+echo "============================================================"
