@@ -1,14 +1,14 @@
 #!/bin/bash
 # ==============================================================================
-# KERIGMA OS - ATUALIZADOR ONLINE E TRANSFORMAÇÃO VISUAL (v1.1)
+# KERIGMA OS - ATUALIZADOR ONLINE v1.2.0
+# Dock macOS + Brave + Spotify + Kerigma IA (Ollama/Gemma) + Wikipédia (Kiwix)
 # Localização no GitHub: update.sh
 # ==============================================================================
 set -euo pipefail
 
-# >>> ALTERE PARA O SEU USUÁRIO/REPOSITÓRIO DO GITHUB <<<
-GITHUB_REPO="SEU_USUARIO/SEU_REPOSITORIO"
+GITHUB_REPO="rafaelgrulke-sketch/KerigmaOS"
 GITHUB_BRANCH="main"
-KERIGMA_VERSION="1.1.0"
+KERIGMA_VERSION="1.2.0"
 
 echo "============================================================"
 echo "   KERIGMA OS - ATUALIZAÇÃO ONLINE v${KERIGMA_VERSION}"
@@ -37,10 +37,14 @@ run_as_user() {
         "$@"
 }
 
-echo ">>> [1/7] Instalando pacotes visuais e ferramentas de atualização..."
 export DEBIAN_FRONTEND=noninteractive
+
+echo ">>> [1/9] Instalando dependências base, temas e Wikipédia (Kiwix)..."
 apt-get update -qq
 apt-get install -y -qq \
+    ca-certificates \
+    curl \
+    gnupg \
     plank \
     papirus-icon-theme \
     fonts-roboto \
@@ -50,10 +54,144 @@ apt-get install -y -qq \
     libkf5config-bin \
     kdialog \
     librsvg2-bin \
-    curl \
+    kiwix-tools \
     neofetch
 
-echo ">>> [2/7] Configurando identidade oficial do Kerigma OS..."
+apt-get install -y -qq kiwix 2>/dev/null || true
+
+echo ">>> [2/9] Instalando Brave Browser..."
+if ! command -v brave-browser >/dev/null 2>&1; then
+    curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg \
+        https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
+    echo "deb [signed-by=/usr/share/keyrings/brave-browser-archive-keyring.gpg] https://brave-browser-apt-release.s3.brave.com/ stable main" \
+        > /etc/apt/sources.list.d/brave-browser-release.list
+    apt-get update -qq
+    apt-get install -y -qq brave-browser || true
+fi
+
+echo ">>> [3/9] Instalando Spotify..."
+if ! command -v spotify >/dev/null 2>&1; then
+    SPOTIFY_OK=0
+    if curl -fsSL https://download.spotify.com/debian/pubkey_C85668DF69375001.gpg \
+        | gpg --dearmor --yes -o /usr/share/keyrings/spotify.gpg 2>/dev/null; then
+        echo "deb [signed-by=/usr/share/keyrings/spotify.gpg] http://repository.spotify.com stable non-free" \
+            > /etc/apt/sources.list.d/spotify.list
+        if apt-get update -qq && apt-get install -y -qq spotify-client; then
+            SPOTIFY_OK=1
+        fi
+    fi
+
+    if [ "$SPOTIFY_OK" -eq 0 ]; then
+        echo ">>> Usando fallback Flatpak para o Spotify..."
+        apt-get install -y -qq flatpak || true
+        flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo || true
+        flatpak install -y --noninteractive flathub com.spotify.Client || true
+    fi
+fi
+
+echo ">>> [4/9] Instalando Kerigma IA (Ollama + Launcher Gemma Local)..."
+if ! command -v ollama >/dev/null 2>&1; then
+    curl -fsSL https://ollama.com/install.sh | sh || true
+fi
+systemctl enable --now ollama 2>/dev/null || true
+
+cat > /usr/local/bin/kerigma-ia << 'EOF'
+#!/bin/bash
+echo "============================================================"
+echo "   KERIGMA IA - ASSISTENTE LOCAL OFFLINE (GEMMA)"
+echo "============================================================"
+
+if ! command -v ollama >/dev/null 2>&1; then
+    echo "Ollama não encontrado. Execute 'kerigma-update' para instalar."
+    read -p "Pressione ENTER para sair..."
+    exit 1
+fi
+
+if ! pgrep -x ollama >/dev/null 2>&1; then
+    echo ">>> Iniciando motor de IA local..."
+    sudo systemctl start ollama 2>/dev/null || (nohup ollama serve >/dev/null 2>&1 & sleep 2)
+fi
+
+MODEL=$(ollama list 2>/dev/null | awk 'NR>1 && $1 ~ /^gemma/ {print $1; exit}')
+if [ -z "$MODEL" ]; then
+    echo ">>> Primeira execução: baixando modelo leve Gemma para uso offline..."
+    if ollama pull gemma3n:e2b; then
+        MODEL="gemma3n:e2b"
+    elif ollama pull gemma3:4b; then
+        MODEL="gemma3:4b"
+    else
+        ollama pull gemma2:2b
+        MODEL="gemma2:2b"
+    fi
+fi
+
+echo ">>> Modelo ativo: $MODEL (digite /bye para sair)"
+echo ""
+ollama run "$MODEL"
+EOF
+chmod +x /usr/local/bin/kerigma-ia
+
+cat > /usr/share/applications/kerigma-ia.desktop << 'EOF'
+[Desktop Entry]
+Type=Application
+Name=Kerigma IA
+Comment=Assistente de Inteligência Artificial local e offline
+Exec=konsole -e /usr/local/bin/kerigma-ia
+Icon=applications-science
+Terminal=false
+Categories=Utility;Development;
+EOF
+chmod 644 /usr/share/applications/kerigma-ia.desktop
+
+echo ">>> [5/9] Configurando Wikipédia Offline (Kiwix)..."
+mkdir -p /opt/kerigma/wikipedia "$TARGET_HOME/Wikipedia"
+chown -R "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/Wikipedia"
+
+cat > /usr/local/bin/kerigma-wikipedia << 'EOF'
+#!/bin/bash
+if command -v kiwix-desktop >/dev/null 2>&1; then
+    exec kiwix-desktop
+fi
+
+ZIM_FILE=$(find /opt/kerigma/wikipedia "$HOME/Wikipedia" -maxdepth 2 -name "*.zim" 2>/dev/null | head -n 1)
+if [ -n "$ZIM_FILE" ]; then
+    pkill -x kiwix-serve 2>/dev/null || true
+    nohup kiwix-serve --port=8090 "$ZIM_FILE" >/dev/null 2>&1 &
+    sleep 1
+    xdg-open "http://localhost:8090" >/dev/null 2>&1 &
+else
+    konsole -e bash -c '
+        echo "============================================================"
+        echo "   WIKIPÉDIA OFFLINE - KERIGMA OS"
+        echo "============================================================"
+        echo "Nenhum arquivo .zim encontrado em ~/Wikipedia."
+        echo ""
+        read -p "Deseja baixar a Wikipédia PT-BR compacta agora? (s/N): " RESP
+        if [[ "$RESP" =~ ^[sS]$ ]]; then
+            mkdir -p "$HOME/Wikipedia"
+            echo ">>> Baixando biblioteca Kiwix..."
+            xdg-open "https://library.kiwix.org/#lang=por&q=wikipedia" >/dev/null 2>&1 &
+            echo "Salve o arquivo .zim na pasta ~/Wikipedia e abra o app novamente."
+        fi
+        read -p "Pressione ENTER para fechar..."
+    '
+fi
+EOF
+chmod +x /usr/local/bin/kerigma-wikipedia
+
+cat > /usr/share/applications/kerigma-wikipedia.desktop << 'EOF'
+[Desktop Entry]
+Type=Application
+Name=Wikipédia Offline
+Comment=Enciclopédia offline do Kerigma OS via Kiwix
+Exec=/usr/local/bin/kerigma-wikipedia
+Icon=accessories-dictionary
+Terminal=false
+Categories=Education;Reference;
+EOF
+chmod 644 /usr/share/applications/kerigma-wikipedia.desktop
+
+echo ">>> [6/9] Atualizando identidade do sistema e comando kerigma-update..."
 cat > /etc/os-release << EOF
 PRETTY_NAME="Kerigma OS ${KERIGMA_VERSION}"
 NAME="Kerigma OS"
@@ -73,10 +211,35 @@ GITHUB_REPO="${GITHUB_REPO}"
 GITHUB_BRANCH="${GITHUB_BRANCH}"
 EOF
 
-echo ">>> [3/7] Gerando papel de parede exclusivo Kerigma OS (1920x1080)..."
+cat > /usr/local/bin/kerigma-update << 'EOF'
+#!/bin/bash
+set -e
+source /etc/kerigma-updater.conf
+URL="https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH:-main}/update.sh"
+TMP_SCRIPT="/tmp/kerigma-online-update.sh"
+echo ">>> Baixando atualização de: $URL"
+curl -fsSL "$URL" -o "$TMP_SCRIPT"
+bash -n "$TMP_SCRIPT"
+chmod +x "$TMP_SCRIPT"
+exec bash "$TMP_SCRIPT"
+EOF
+chmod +x /usr/local/bin/kerigma-update
+
+cat > /usr/share/applications/kerigma-updater.desktop << 'EOF'
+[Desktop Entry]
+Type=Application
+Name=Atualizar Kerigma OS
+Comment=Baixa e aplica a atualização mais recente do Kerigma OS online
+Exec=konsole -e bash -c "kerigma-update; echo ''; read -p 'Pressione ENTER para fechar...'"
+Icon=system-software-update
+Terminal=false
+Categories=System;Settings;
+EOF
+chmod 644 /usr/share/applications/kerigma-updater.desktop
+
+echo ">>> [7/9] Gerando papel de parede Kerigma OS..."
 WALL_DIR="/usr/share/wallpapers/KerigmaOS"
 mkdir -p "$WALL_DIR"
-
 cat > "$WALL_DIR/kerigma-wallpaper.svg" << 'EOF'
 <svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
   <defs>
@@ -110,67 +273,29 @@ cat > "$WALL_DIR/kerigma-wallpaper.svg" << 'EOF'
   <text x="960" y="555" text-anchor="middle" fill="#cbd5e1" fill-opacity="0.55" font-family="Roboto, sans-serif" font-size="18" letter-spacing="8">DEBIAN EDITION</text>
 </svg>
 EOF
-
 rsvg-convert -w 1920 -h 1080 "$WALL_DIR/kerigma-wallpaper.svg" -o "$WALL_DIR/kerigma-wallpaper.png"
 chmod 644 "$WALL_DIR/kerigma-wallpaper.png" "$WALL_DIR/kerigma-wallpaper.svg"
 
-echo ">>> [4/7] Instalando comando permanente kerigma-update e atalho gráfico..."
-cat > /usr/local/bin/kerigma-update << 'EOF'
-#!/bin/bash
-set -e
-
-if [ -f /etc/kerigma-updater.conf ]; then
-    source /etc/kerigma-updater.conf
-fi
-
-if [ -z "${GITHUB_REPO:-}" ] || [ "$GITHUB_REPO" = "SEU_USUARIO/SEU_REPOSITORIO" ]; then
-    echo "ERRO: Configure GITHUB_REPO em /etc/kerigma-updater.conf"
-    exit 1
-fi
-
-URL="https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH:-main}/update.sh"
-TMP_SCRIPT="/tmp/kerigma-online-update.sh"
-
-echo ">>> Baixando atualização de: $URL"
-curl -fsSL "$URL" -o "$TMP_SCRIPT"
-bash -n "$TMP_SCRIPT"
-chmod +x "$TMP_SCRIPT"
-exec bash "$TMP_SCRIPT"
-EOF
-chmod +x /usr/local/bin/kerigma-update
-
-cat > /usr/share/applications/kerigma-updater.desktop << 'EOF'
-[Desktop Entry]
-Type=Application
-Name=Atualizar Kerigma OS
-Comment=Baixa e aplica a atualização mais recente do Kerigma OS online
-Exec=konsole -e bash -c "kerigma-update; echo ''; read -p 'Pressione ENTER para fechar...'"
-Icon=system-software-update
-Terminal=false
-Categories=System;Settings;
-EOF
-chmod 644 /usr/share/applications/kerigma-updater.desktop
-
-echo ">>> [5/7] Criando tema KerigmaGlass e configurando o Dock (Plank)..."
-PLANK_THEME_DIR="/usr/share/plank/themes/KerigmaGlass"
+echo ">>> [8/9] Configurando Dock inferior estilo macOS (Plank KerigmaMacOS)..."
+PLANK_THEME_DIR="/usr/share/plank/themes/KerigmaMacOS"
 mkdir -p "$PLANK_THEME_DIR"
 cat > "$PLANK_THEME_DIR/dock.theme" << 'EOF'
 [PlankTheme]
-TopRoundness=14
-BottomRoundness=14
+TopRoundness=18
+BottomRoundness=18
 LineWidth=1
-OuterStrokeColor=255;;255;;255;;45
-FillStartColor=18;;20;;34;;210
-FillEndColor=18;;20;;34;;210
-InnerStrokeColor=255;;255;;255;;25
+OuterStrokeColor=255;;255;;255;;65
+FillStartColor=24;;26;;40;;195
+FillEndColor=18;;20;;32;;205
+InnerStrokeColor=255;;255;;255;;30
 
 [PlankDockTheme]
-HorizPadding=6
-TopPadding=4
-BottomPadding=3
-ItemPadding=6
-IndicatorSize=5
-IconShadowSize=2
+HorizPadding=10
+TopPadding=6
+BottomPadding=4
+ItemPadding=8
+IndicatorSize=4
+IconShadowSize=3
 UrgentBounceHeight=1.5
 LaunchBounceHeight=0.6
 FadeOpacity=1
@@ -181,7 +306,7 @@ ActiveTime=300
 SlideTime=300
 FadeTime=250
 HideTime=250
-GlowSize=24
+GlowSize=26
 GlowTime=10000
 GlowPulseTime=2000
 GlowMode=1
@@ -207,16 +332,22 @@ EOF
 }
 
 add_dock_item "/usr/share/applications/org.kde.dolphin.desktop" "01-dolphin"
-add_dock_item "/usr/share/applications/org.kde.konsole.desktop" "02-konsole"
-add_dock_item "/usr/share/applications/org.kde.kate.desktop" "03-kate"
-add_dock_item "/usr/share/applications/vlc.desktop" "04-vlc"
-add_dock_item "/usr/share/applications/systemsettings.desktop" "05-settings"
-add_dock_item "/usr/share/applications/kerigma-updater.desktop" "06-updater"
-add_dock_item "/usr/share/applications/kerigma-welcome.desktop" "07-welcome"
+add_dock_item "/usr/share/applications/brave-browser.desktop" "02-brave"
+
+if [ -f "/usr/share/applications/spotify.desktop" ]; then
+    add_dock_item "/usr/share/applications/spotify.desktop" "03-spotify"
+elif [ -f "/var/lib/flatpak/exports/share/applications/com.spotify.Client.desktop" ]; then
+    add_dock_item "/var/lib/flatpak/exports/share/applications/com.spotify.Client.desktop" "03-spotify"
+fi
+
+add_dock_item "/usr/share/applications/kerigma-ia.desktop" "04-kerigma-ia"
+add_dock_item "/usr/share/applications/kerigma-wikipedia.desktop" "05-wikipedia"
+add_dock_item "/usr/share/applications/org.kde.konsole.desktop" "06-konsole"
+add_dock_item "/usr/share/applications/systemsettings.desktop" "07-settings"
+add_dock_item "/usr/share/applications/kerigma-updater.desktop" "08-updater"
 
 chown -R "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/.config/plank"
 
-# Garante autostart do Plank
 mkdir -p /etc/xdg/autostart
 cat > /etc/xdg/autostart/plank.desktop << 'EOF'
 [Desktop Entry]
@@ -229,32 +360,23 @@ NoDisplay=true
 X-GNOME-Autostart-enabled=true
 EOF
 
-run_as_user dconf write /net/launchpad/plank/docks/dock1/theme "'KerigmaGlass'" || true
+run_as_user dconf write /net/launchpad/plank/docks/dock1/theme "'KerigmaMacOS'" || true
 run_as_user dconf write /net/launchpad/plank/docks/dock1/position "'bottom'" || true
-run_as_user dconf write /net/launchpad/plank/docks/dock1/icon-size 44 || true
+run_as_user dconf write /net/launchpad/plank/docks/dock1/alignment "'center'" || true
+run_as_user dconf write /net/launchpad/plank/docks/dock1/icon-size 48 || true
 run_as_user dconf write /net/launchpad/plank/docks/dock1/zoom-enabled true || true
-run_as_user dconf write /net/launchpad/plank/docks/dock1/zoom-percent 145 || true
-run_as_user dconf write /net/launchpad/plank/docks/dock1/hide-mode "'intelligent'" || true
+run_as_user dconf write /net/launchpad/plank/docks/dock1/zoom-percent 155 || true
+run_as_user dconf write /net/launchpad/plank/docks/dock1/hide-mode "'dodge-maximized'" || true
 run_as_user dconf write /net/launchpad/plank/docks/dock1/show-dock-item false || true
 
-echo ">>> [6/7] Aplicando tema visual, ícones, fontes e botões estilo macOS no KDE..."
-if command -v lookandfeeltool >/dev/null 2>&1; then
-    run_as_user lookandfeeltool -a org.kde.breezedark.desktop || true
-fi
-
+echo ">>> [9/9] Aplicando Barra Superior macOS, Compositor KWin e iniciando o Dock..."
 run_as_user kwriteconfig5 --file kdeglobals --group Icons --key Theme "Papirus-Dark"
-run_as_user kwriteconfig5 --file kdeglobals --group General --key font "Roboto,10,-1,5,50,0,0,0,0,0"
-run_as_user kwriteconfig5 --file kdeglobals --group General --key menuFont "Roboto,10,-1,5,50,0,0,0,0,0"
-run_as_user kwriteconfig5 --file kdeglobals --group WM --key activeFont "Roboto,10,-1,5,75,0,0,0,0,0"
-
-# Botões das janelas à esquerda (Fechar, Minimizar, Maximizar - estilo macOS)
+run_as_user kwriteconfig5 --file kwinrc --group Compositing --key Enabled true
 run_as_user kwriteconfig5 --file kwinrc --group org.kde.kdecoration2 --key ButtonsOnLeft "XIA"
 run_as_user kwriteconfig5 --file kwinrc --group org.kde.kdecoration2 --key ButtonsOnRight ""
-run_as_user kwriteconfig5 --file kwinrc --group org.kde.kdecoration2 --key BorderSize "None"
 run_as_user kwriteconfig5 --file kwinrc --group Plugins --key blurEnabled true
 run_as_user kwriteconfig5 --file kwinrc --group Plugins --key contrastEnabled true
 
-echo ">>> [7/7] Construindo Barra Superior estilo macOS e aplicando Papel de Parede..."
 QDBUS_BIN="$(command -v qdbus-qt5 || command -v qdbus || true)"
 if [ -n "$QDBUS_BIN" ] && pgrep -u "$TARGET_USER" plasmashell >/dev/null 2>&1; then
     PLASMA_JS='
@@ -297,13 +419,13 @@ for (var j = 0; j < allDesktops.length; j++) {
     run_as_user "$QDBUS_BIN" org.kde.KWin /KWin reconfigure || true
 fi
 
-# Reinicia o Plank Dock já com o tema KerigmaGlass
+# Reinicia o Dock de forma desacoplada para não fechar ao final do script
 pkill -u "$TARGET_USER" -x plank 2>/dev/null || true
 sleep 1
-run_as_user nohup plank >/dev/null 2>&1 &
+run_as_user setsid -f plank >/dev/null 2>&1
 
 echo "============================================================"
-echo "   KERIGMA OS ATUALIZADO COM SUCESSO PARA v${KERIGMA_VERSION}!"
-echo "   Da próxima vez, basta abrir o app 'Atualizar Kerigma OS'"
-echo "   ou digitar 'kerigma-update' no terminal."
+echo "   KERIGMA OS ATUALIZADO PARA v${KERIGMA_VERSION} COM SUCESSO!"
+echo "   Apps no Dock: Arquivos, Brave, Spotify, Kerigma IA,"
+echo "   Wikipédia Offline, Terminal, Configurações e Atualizador."
 echo "============================================================"
